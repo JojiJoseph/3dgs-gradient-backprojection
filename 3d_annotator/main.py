@@ -47,13 +47,16 @@ from gsplat import rasterization
 import numpy as np
 
 from image_viewer import ImageViewer
-from image_viewer import CircleTool, RectangleTool, LineTool, PolygonTool
+from tools import CircleTool, RectangleTool, LineTool, PolygonTool, PromptTool
 from segmentor import Segmentor
+# import cv2
+# import matplotlib
+# matplotlib.use("TkAgg")
 
 torch.set_default_device("cuda")
 
 splats = load_checkpoint(
-    "../data/garden/ckpts/ckpt_29999_rank0.pt", "../data/garden", data_factor=1
+    "../data/garden/ckpts/ckpt_29999_rank0.pt", "../data/garden", data_factor=4
 )
 
 means = splats["means"]
@@ -94,6 +97,10 @@ for image in colmap_project.images.values():
 
 
 segmentor = Segmentor(splats)
+mask_3d = segmentor.prune_by_gradients()
+print("No of gaussians after pruning: ", mask_3d.sum())
+print("% of gaussians kept: ", mask_3d.sum() / mask_3d.shape[0] * 100)
+segmentor.load_features("../results/garden/features_lseg.pt")
 
 rendering = segmentor.render(viewmat)
 
@@ -102,6 +109,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.init_ui()
+        self.segmentor = segmentor
 
     def init_ui(self):
         """Initialize UI elements, including menus."""
@@ -111,6 +119,8 @@ class MainWindow(QMainWindow):
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.setCentralWidget(self.scroll_area)
+        # self.render_label = QLabel("Rendering")
+        # self.addDockWidget(Qt.RightDockWidgetArea, self.render_label)
 
         # Menubar
         self.create_menus()
@@ -121,6 +131,12 @@ class MainWindow(QMainWindow):
 
         self.image_viewer = ImageViewer(rendering_cv)
         self.scroll_area.setWidget(self.image_viewer)
+
+        self.points_3d = []
+        self.points_3d_categories = []
+        self.points_3d_items = []
+        self.points_features = []
+        self.mask_3d = None
 
         self.create_side_bar()
         self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
@@ -183,6 +199,7 @@ class MainWindow(QMainWindow):
         self.x_control = SliderWithInput("X", -1000, 1000, 0, self.redraw)
         self.y_control = SliderWithInput("Y", -1000, 1000, 0, self.redraw)
         self.z_control = SliderWithInput("Z", -1000, 1000, 0, self.redraw)
+        
 
         for control in [
             self.roll_control,
@@ -226,9 +243,54 @@ class MainWindow(QMainWindow):
 
     def redraw(self):
         viewmat = self._viewmat_from_sliders()
-        img = segmentor.render(viewmat)
+        self.viewmat = viewmat
+
+        if len(self.points_features) > 0:
+            mask_3d = segmentor.get_point_prompt_mask(self.points_features, self.points_3d_categories)
+        else:
+            mask_3d = torch.ones(segmentor.features.shape[0], device="cuda", dtype=torch.bool)
+        self.mask_3d = mask_3d
+
+        
+        img = segmentor.render_with_mask_3d(viewmat, self.mask_3d)
         pixmap = self._pixmap_from_cv(img)
         self.image_viewer.image_item.setPixmap(pixmap)
+
+        scene = self.image_viewer.scene
+        for item in self.points_3d_items:
+            scene.removeItem(item)
+        self.points_3d_items = []
+
+        for (x, y, z), cat in zip(self.points_3d, self.points_3d_categories):
+            print(x, y, z)
+            viewmat_np = viewmat.cpu().numpy()
+            x, y, z, _ = viewmat_np @ np.array([[x], [y], [z], [1]])
+            fx = segmentor.splats["camera_matrix"][0, 0]
+            fy = segmentor.splats["camera_matrix"][1, 1]
+            cx = segmentor.splats["camera_matrix"][0, 2].item()
+            cy = segmentor.splats["camera_matrix"][1, 2].item()
+            fx, fy = fx.item(), fy.item()
+            width = segmentor.splats["camera_matrix"][0, 2] * 2
+            height = segmentor.splats["camera_matrix"][1, 2] * 2
+            x = (x / z) * fx + cx
+            y = (y / z) * fy + cy
+            print(x, y)
+            item = QGraphicsEllipseItem(x, y, 25, 25)
+            if cat == 1:
+                item.setBrush(QBrush(QColor(0, 255, 0)))
+            else:
+                item.setBrush(QBrush(QColor(255, 0, 0)))
+            scene.addItem(item)
+            self.points_3d_items.append(item)
+
+        
+        output = segmentor.render_3d_mask(viewmat, mask_3d)
+        import cv2
+        cv2.imshow("output", output)
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            cv2.destroyAllWindows()
+            exit()
 
     def zoom_image(self, factor=1):
         self.image_viewer.scale(factor, factor)
@@ -239,8 +301,12 @@ class MainWindow(QMainWindow):
 
     def create_context_menu(self):
         context_menu = QMenu(self)
-        context_menu.addAction(self.create_action("Undo", self.undo_action))
-        context_menu.addAction(self.create_action("Redo", self.redo_action))
+        undo_action = QAction(QIcon.fromTheme("edit-undo"), "Undo", self)
+        context_menu.addAction(undo_action)
+        undo_action.triggered.connect(self.undo_action)
+        redo_action = QAction(QIcon.fromTheme("edit-redo"), "Redo", self)
+        redo_action.triggered.connect(self.redo_action)
+        context_menu.addAction(redo_action)
         return context_menu
 
     def create_menus(self):
@@ -253,13 +319,22 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.create_action("Open", self.open_file))
         file_menu.addSeparator()
         file_menu.addAction(exit_action := self.create_action("Exit", self.close))
+        exit_action.setIcon(QIcon.fromTheme("application-exit"))
 
         exit_action.setShortcut("Ctrl+Q")
 
         # Edit Menu
         edit_menu = menubar.addMenu("Edit")
-        edit_menu.addAction(self.create_action("Undo", self.undo_action))
-        edit_menu.addAction(self.create_action("Redo", self.redo_action))
+        undo_action = QAction(QIcon.fromTheme("edit-undo"), "Undo", self)
+        undo_action.triggered.connect(self.undo_action)
+        # Add shortcut
+        undo_action.setShortcut("Ctrl+Z")
+        edit_menu.addAction(undo_action)
+        redo_action = QAction(QIcon.fromTheme("edit-redo"), "Redo", self)
+        redo_action.triggered.connect(self.redo_action)
+        # Add shortcut
+        redo_action.setShortcut("Ctrl+Shift+Z")
+        edit_menu.addAction(redo_action)
 
         # Tools Menu
         tools_menu = menubar.addMenu("Tools")
@@ -309,17 +384,15 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(brush_action)
         tools_menu.addAction(point_prompt_action)
 
-        polygon_action = QAction("Polygon", self)
-        polygon_action.setCheckable(True)
-        tools_action_group.addAction(polygon_action)
-        tools_menu.addAction(polygon_action)
-
         eraser_action = QAction("Eraser", self)
         eraser_action.setCheckable(True)
         tools_action_group.addAction(eraser_action)
         tools_menu.addAction(eraser_action)
 
+        
+
         point_prompt_action.setChecked(True)
+        point_prompt_action.triggered.connect(lambda: self.image_viewer.set_tool(PromptTool()))
 
         self.tools_action_group = tools_action_group
 
@@ -328,14 +401,22 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self.create_action("About", self.show_about))
 
         zoom_menu = menubar.addMenu("Zoom")
-        zoom_menu.addAction(self.create_action("Zoom In", lambda: self.zoom_image(2)))
+        zoom_menu.addAction(zoom_in_action := self.create_action("Zoom In", lambda: self.zoom_image(2)))
+        zoom_in_action.setShortcut("Ctrl+=")
+        zoom_in_action.setIcon(QIcon.fromTheme("zoom-in"))
         zoom_menu.addAction(
-            self.create_action("Zoom Out", lambda: self.zoom_image(0.5))
+            zoom_out_action := self.create_action("Zoom Out", lambda: self.zoom_image(0.5))
         )
+        zoom_out_action.setShortcut("Ctrl+-")
+        zoom_out_action.setIcon(QIcon.fromTheme("zoom-out"))
         zoom_menu.addAction(
-            self.create_action("Reset Zoom", lambda: self.image_viewer.resetTransform())
+            reset_zoom_action := self.create_action("Reset Zoom", lambda: self.image_viewer.resetTransform())
         )
+        reset_zoom_action.setShortcut("Ctrl+0")
+        reset_zoom_action.setIcon(QIcon.fromTheme("zoom-original"))
         fit_to_window_action = zoom_menu.addAction("Fit to Window")
+        fit_to_window_action.setShortcut("Ctrl+9")
+        fit_to_window_action.setIcon(QIcon.fromTheme("zoom-fit-best"))
         fit_to_window_action.triggered.connect(lambda: self.fit_to_window())
         zoom_menu.addAction(fit_to_window_action)
 
