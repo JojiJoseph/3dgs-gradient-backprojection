@@ -23,10 +23,12 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QGraphicsEllipseItem,
     QToolBar,
+    QGraphicsItem
     
 )
 from PyQt5.QtGui import QColor, QBrush, QPen, QPixmap, QImage, QPainter, QIcon
 from PyQt5.QtCore import Qt, QPointF
+
 
 import PyQt5.QtCore as QtCore
 from PyQt5.QtGui import QImage, QPixmap, QPainter
@@ -133,9 +135,9 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidget(self.image_viewer)
 
         self.points_3d = []
-        self.points_3d_categories = []
-        self.points_3d_items = []
-        self.points_features = []
+        self.point_3d_categories = []
+        self.point_graphics_items = []
+        self.point_features = []
         self.mask_3d = None
 
         self.create_side_bar()
@@ -245,23 +247,23 @@ class MainWindow(QMainWindow):
         viewmat = self._viewmat_from_sliders()
         self.viewmat = viewmat
 
-        if len(self.points_features) > 0:
-            mask_3d = segmentor.get_point_prompt_mask(self.points_features, self.points_3d_categories)
+        if len(self.point_features) > 0:
+            mask_3d = segmentor.get_point_prompt_mask(self.point_features, self.point_3d_categories)
         else:
             mask_3d = torch.ones(segmentor.features.shape[0], device="cuda", dtype=torch.bool)
         self.mask_3d = mask_3d
 
-        
+
         img = segmentor.render_with_mask_3d(viewmat, self.mask_3d)
         pixmap = self._pixmap_from_cv(img)
         self.image_viewer.image_item.setPixmap(pixmap)
 
         scene = self.image_viewer.scene
-        for item in self.points_3d_items:
+        for item in self.point_graphics_items:
             scene.removeItem(item)
-        self.points_3d_items = []
+        self.point_graphics_items = []
 
-        for (x, y, z), cat in zip(self.points_3d, self.points_3d_categories):
+        for (x, y, z), cat in zip(self.points_3d, self.point_3d_categories):
             print(x, y, z)
             viewmat_np = viewmat.cpu().numpy()
             x, y, z, _ = viewmat_np @ np.array([[x], [y], [z], [1]])
@@ -275,13 +277,15 @@ class MainWindow(QMainWindow):
             x = (x / z) * fx + cx
             y = (y / z) * fy + cy
             print(x, y)
-            item = QGraphicsEllipseItem(x, y, 25, 25)
+            item = QGraphicsEllipseItem(0, 0, 25, 25)
+            item.setFlag(QGraphicsItem.ItemIgnoresTransformations)
             if cat == 1:
                 item.setBrush(QBrush(QColor(0, 255, 0)))
             else:
                 item.setBrush(QBrush(QColor(255, 0, 0)))
+            item.setPos(QPointF(x-12.5, y-12.5))
             scene.addItem(item)
-            self.points_3d_items.append(item)
+            self.point_graphics_items.append(item)
 
         
         output = segmentor.render_3d_mask(viewmat, mask_3d)

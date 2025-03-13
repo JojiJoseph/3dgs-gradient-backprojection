@@ -14,7 +14,7 @@ from PyQt5.QtCore import QPointF, Qt, QLineF, QRectF
 from PyQt5.QtGui import QPolygonF
 import random
 
-from tools import CircleTool
+from tools import CircleTool, PromptTool
 
 
 
@@ -53,7 +53,7 @@ class ImageViewer(QGraphicsView):
         # Undo stack
         self.undo_stack = QUndoStack(self)
 
-        self.active_tool = CircleTool()
+        self.active_tool = PromptTool()
 
     def wheelEvent(self, event):
         """Handle zoom on mouse wheel."""
