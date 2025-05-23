@@ -1,3 +1,4 @@
+# TODO: Clean up
 from copy import deepcopy
 from typing import Literal
 import tyro
@@ -20,13 +21,14 @@ from utils import (
     test_proper_pruning,
     get_viewmat_from_colmap_image,
     load_checkpoint,
+    load_checkpoint_f3dgs,
     torch_to_cv,
 )
 
 
-def render_pca(
+def render_pca_f3dgs(
     splats,
-    features,
+    # features,
     output_path,
     pca_on_gaussians=True,
     scale=1.0,
@@ -42,13 +44,19 @@ def render_pca(
     colors = torch.cat([colors_dc, colors_rest], dim=1)
     opacities = torch.sigmoid(splats["opacity"])
     scales = torch.exp(splats["scaling"])
+    features = splats["features"]
+    conv = splats["conv"]
     quats = splats["rotation"]
     K = splats["camera_matrix"]
     aux_dir = output_path + ".images"
     os.makedirs(aux_dir, exist_ok=True)
 
+    features_expanded = features @ conv
+
+    features_expanded = torch.nn.functional.normalize(features_expanded, dim=1)
+
     pca = PCA(n_components=3)
-    features_pca = pca.fit_transform(features.detach().cpu().numpy())
+    features_pca = pca.fit_transform((features_expanded).detach().cpu().numpy())
     feats_min = np.min(features_pca, axis=(0, 1))
     feats_max = np.max(features_pca, axis=(0, 1))
     features_pca = (features_pca - feats_min) / (feats_max - feats_min)
@@ -58,6 +66,7 @@ def render_pca(
             splats["colmap_project"].images.values(), key=lambda x: x.name
         ):
             viewmat = get_viewmat_from_colmap_image(image)
+            print(means.shape, features_pca.shape)
             features_rendered, alphas, meta = rasterization(
                 means,
                 quats,
@@ -95,7 +104,7 @@ def render_pca(
                 height=K[1, 2] * 2,
                 # sh_degree=3,
             )
-            features_rendered = features_rendered[0]
+            features_rendered = features_rendered[0] @ conv
             h, w, c = features_rendered.shape
             features_rendered = (
                 features_rendered.reshape(h * w, c).detach().cpu().numpy()
@@ -134,30 +143,24 @@ def main(
     torch.set_default_device("cuda")
 
     os.makedirs(results_dir, exist_ok=True)
-    splats = load_checkpoint(
+    splats = load_checkpoint_f3dgs(
         checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
     )
     splats_optimized = prune_by_gradients(splats)
     test_proper_pruning(splats, splats_optimized)
     splats = splats_optimized
-    if feature == "lseg":
-        features = torch.load(f"{results_dir}/features_lseg.pt")
-    elif feature == "dino":
-        features = torch.load(f"{results_dir}/features_dino.pt")
 
-    render_pca(
+    render_pca_f3dgs(
         splats,
-        features,
-        f"{results_dir}/pca_gaussians_{feature}.gif",
+        f"{results_dir}/pca_f3dgs_gaussians_{feature}.gif",
         pca_on_gaussians=True,
-        scale=0.20,
+        scale=0.2,
         feedback=show_visual_feedback,
     )
 
-    render_pca(
+    render_pca_f3dgs(
         splats,
-        features,
-        f"{results_dir}/pca_renderings_{feature}.gif",
+        f"{results_dir}/pca_f3dgs_gaussians_{feature}.gif",
         pca_on_gaussians=False,
         feedback=show_visual_feedback,
     )
