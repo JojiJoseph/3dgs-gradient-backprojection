@@ -15,6 +15,7 @@ import tyro
 
 from utils import (
     get_rpy_matrix,
+    get_viewmat_from_colmap_image,
     prune_by_gradients,
     torch_to_cv,
     load_checkpoint,
@@ -33,15 +34,26 @@ torch.set_default_device("cuda")
 @dataclass
 class Args:
     checkpoint: str  # Path to the 3DGS checkpoint file (.pth/.pt) to be visualized.
-    data_dir: str  # Path to the COLMAP project directory containing sparse reconstruction.
-    format: Optional[Literal["inria", "gsplat"]] = "gsplat"  # Format of the checkpoint: 'inria' (original 3DGS) or 'gsplat'.
-    rasterizer: Optional[Literal["inria", "gsplat"]] = None  # [Deprecated] Use --format instead. Provided for backward compatibility.
+    data_dir: (
+        str  # Path to the COLMAP project directory containing sparse reconstruction.
+    )
+    format: Optional[Literal["inria", "gsplat"]] = (
+        "gsplat"  # Format of the checkpoint: 'inria' (original 3DGS) or 'gsplat'.
+    )
+    rasterizer: Optional[Literal["inria", "gsplat"]] = (
+        None  # [Deprecated] Use --format instead. Provided for backward compatibility.
+    )
     data_factor: int = 4  # Downscaling factor for the renderings.
+    turntable: bool = False  # Whether to use a turntable mode for the viewer.
 
+
+@dataclass
+class ViewerArgs:
+    turntable: bool = False
 
 
 class Viewer:
-    def __init__(self, splats):
+    def __init__(self, splats, viewer_args):
         self.splats = None
         self.camera_matrix = None
         self.width = None
@@ -50,6 +62,12 @@ class Viewer:
         self.window_name = "GSplat Explorer"
         self._init_sliders()
         self._load_splats(splats)
+        self.turntable = viewer_args.turntable
+        if self.turntable:
+            warnings.warn(
+                "Turntable mode is a work in progress and is not fully functional yet.",
+                UserWarning,
+            )
 
     def _load_splats(self, splats):
         K = splats["camera_matrix"].cuda()
@@ -130,7 +148,7 @@ class Viewer:
 
         return viewmat
 
-    def render_gaussians(self, viewmat, scaling):
+    def render_gaussians(self, viewmat, scaling, anaglyph=False):
         output, _, _ = rasterization(
             self.means,
             self.quats,
@@ -143,49 +161,143 @@ class Viewer:
             height=self.height,
             sh_degree=3,
         )
-        return torch_to_cv(output[0])
+        if not anaglyph:
+            return np.ascontiguousarray(torch_to_cv(output[0]))
+        left = torch_to_cv(output[0])
+        viewmat_right_eye = viewmat.clone()
+        viewmat_right_eye[0, 3] -= 0.05  # Offset for the right eye
+        output, _, _ = rasterization(
+            self.means,
+            self.quats,
+            self.scales * scaling,
+            self.opacities,
+            self.colors,
+            viewmat_right_eye[None],
+            self.camera_matrix[None],
+            width=self.width,
+            height=self.height,
+            sh_degree=3,
+        )
+        right = torch_to_cv(output[0])
+        left_copy = left.copy()
+        right_copy = right.copy()
+        left_copy[..., :2] = 0  # Set left eye's red and green channels to zero
+        right_copy[..., -1] = 0  # Set right eye's blue channel to zero
+        return (
+            left_copy + right_copy,
+            np.ascontiguousarray(left_copy),
+            np.ascontiguousarray(right_copy),
+        )
+
+    def compute_world_frame(self):
+        """
+        Compute the new world frame (center_point, upvector, view_direction, ortho_direction)
+        based on the average camera positions and orientations.
+        """
+        # Initialize vectors
+        center_point = np.zeros(3, dtype=np.float32)
+        upvector_sum = np.zeros(3, dtype=np.float32)
+        view_direction_sum = np.zeros(3, dtype=np.float32)
+
+        # Iterate over camera images to compute average position and orientation
+        for image in self.splats["colmap_project"].images.values():
+            viewmat = get_viewmat_from_colmap_image(image)
+            viewmat_np = viewmat.cpu().numpy()
+            c2w = np.linalg.inv(viewmat_np)
+            center_point += c2w[:3, 3].squeeze()  # camera position
+            upvector_sum += c2w[:3, 1].squeeze()  # up direction
+            view_direction_sum += c2w[:3, 2].squeeze()  # viewing direction
+
+        # Average position and orientation vectors
+        num_images = len(self.splats["colmap_project"].images)
+        center_point /= num_images
+        upvector = upvector_sum / np.linalg.norm(upvector_sum)
+        view_direction = view_direction_sum / np.linalg.norm(view_direction_sum)
+
+        # Make view_direction orthogonal to upvector
+        view_direction -= upvector * np.dot(view_direction, upvector)
+        view_direction /= np.linalg.norm(view_direction)
+
+        # Compute the orthogonal direction (right vector)
+        ortho_direction = np.cross(upvector, view_direction)
+        ortho_direction /= np.linalg.norm(ortho_direction)
+
+        # Optionally override center_point with the mean of your 3D data
+        center_point = torch.mean(self.means, dim=0).cpu().numpy()
+
+        # Save the computed frame vectors as attributes
+        self.center_point = center_point
+        self.upvector = upvector
+        self.view_direction = view_direction
+        self.ortho_direction = ortho_direction
+
+    def visualize_world_frame(self, output_cv, viewmat):
+        viewmat_np = viewmat.cpu().numpy()
+        T = np.eye(4)
+        z_axis = -self.upvector
+        x_axis = self.view_direction
+        y_axis = np.cross(z_axis, x_axis)
+        T[:3, :3] = np.array([x_axis, y_axis, z_axis]).T
+        T[:3, 3] = self.center_point
+        T = viewmat_np @ T
+        rvec = cv2.Rodrigues(T[:3, :3])[0]
+        tvec = T[:3, 3]
+        cv2.drawFrameAxes(
+            output_cv,
+            self.camera_matrix.cpu().numpy(),
+            None,
+            rvec,
+            tvec,
+            length=1,
+            thickness=2,
+        )
 
     def run(self):
         """Run the interactive Gaussian Splat viewer loop once until exit."""
-        show_anaglyph = False
+        self.show_anaglyph = False
+        self.compute_world_frame()
 
         while True:
             scaling = cv2.getTrackbarPos("Scaling", self.window_name) / 100.0
             viewmat = self._get_viewmat_from_trackbars()
 
-            output_cv = self.render_gaussians(viewmat, scaling)
+            if self.show_anaglyph:
+                output_cv, _, _ = self.render_gaussians(viewmat, scaling, anaglyph=True)
+            else:
+                output_cv = self.render_gaussians(viewmat, scaling)
 
-            if show_anaglyph:
-                offset_viewmat = viewmat.clone()
-                offset_viewmat[0, 3] -= 0.05
-                output_left = output_cv
-                output_right = self.render_gaussians(offset_viewmat, scaling)
-                output_left[..., :2] = 0
-                output_right[..., -1] = 0
-                output_cv = output_left + output_right
+            if self.turntable:
+                self.visualize_world_frame(output_cv, viewmat)
 
             cv2.imshow(self.window_name, output_cv)
             full_key = cv2.waitKeyEx(1)
             key = full_key & 0xFF
 
-            if key == ord("q") or key == 27:
+            should_continue = self.handle_key_press(key, {"viewmat": viewmat})
+            if not should_continue:
                 break
-            if key == ord("3"):
-                show_anaglyph = not show_anaglyph
-            if key in [ord("w"), ord("a"), ord("s"), ord("d")]:
-                # Modify viewmat and sync UI
-                delta = 0.1
-                if key == ord("w"):
-                    viewmat[2, 3] -= delta
-                elif key == ord("s"):
-                    viewmat[2, 3] += delta
-                elif key == ord("a"):
-                    viewmat[0, 3] += delta
-                elif key == ord("d"):
-                    viewmat[0, 3] -= delta
-                self.update_trackbars_from_viewmat(viewmat)
 
         cv2.destroyAllWindows()
+
+    def handle_key_press(self, key, data):
+        viewmat = data["viewmat"]
+        if key == ord("q") or key == 27:
+            return False  # Exit the viewer
+        if key == ord("3"):
+            self.show_anaglyph = not self.show_anaglyph
+        if key in [ord("w"), ord("a"), ord("s"), ord("d")]:
+            # Modify viewmat and sync UI
+            delta = 0.1
+            if key == ord("w"):
+                viewmat[2, 3] -= delta
+            elif key == ord("s"):
+                viewmat[2, 3] += delta
+            elif key == ord("a"):
+                viewmat[0, 3] += delta
+            elif key == ord("d"):
+                viewmat[0, 3] -= delta
+            self.update_trackbars_from_viewmat(viewmat)
+        return True  # Continue the viewer loop
 
 
 def main(args: Args):
@@ -200,7 +312,12 @@ def main(args: Args):
     splats = load_checkpoint(args.checkpoint, args.data_dir, format, args.data_factor)
     splats = prune_by_gradients(splats)
 
-    viewer = Viewer(splats)
+    if args.turntable:
+        viewer_args = ViewerArgs(turntable=True)
+    else:
+        viewer_args = ViewerArgs(turntable=False)
+
+    viewer = Viewer(splats, viewer_args=viewer_args)
     viewer.run()
 
 
