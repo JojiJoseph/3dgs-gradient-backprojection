@@ -63,11 +63,6 @@ class Viewer:
         self._init_sliders()
         self._load_splats(splats)
         self.turntable = viewer_args.turntable
-        if self.turntable:
-            warnings.warn(
-                "Turntable mode is a work in progress and is not fully functional yet.",
-                UserWarning,
-            )
         self.mouse_down = False
         self.mouse_x = 0
         self.mouse_y = 0
@@ -302,48 +297,87 @@ class Viewer:
                 viewmat[0, 3] -= delta
             self.update_trackbars_from_viewmat(viewmat)
         return True  # Continue the viewer loop
-    
+
     def handle_mouse_event(self, event, x, y, flags, param):
+        if not self.turntable:
+            return
         if event == cv2.EVENT_LBUTTONDOWN:
             self.mouse_down = True
             self.mouse_x = x
             self.mouse_y = y
+            self.view_mat_progress = self._get_viewmat_from_trackbars()
+            self.is_alt_pressed = flags & cv2.EVENT_FLAG_ALTKEY
+            self.is_shift_pressed = flags & cv2.EVENT_FLAG_SHIFTKEY
+            self.is_ctrl_pressed = flags & cv2.EVENT_FLAG_CTRLKEY
         elif event == cv2.EVENT_LBUTTONUP:
             self.mouse_down = False
         elif event == cv2.EVENT_MOUSEMOVE and self.mouse_down:
             dx = x - self.mouse_x
             dy = y - self.mouse_y
-            self.mouse_x = x
-            self.mouse_y = y
-            
+
+            if self.is_ctrl_pressed:
+                viewmat = self._get_viewmat_from_trackbars()
+                viewmat[2,3] += dy / self.height * 10  # Move camera forward/backward
+                self.update_trackbars_from_viewmat(viewmat)
+                self.mouse_x = x
+                self.mouse_y = y
+                return
+
             # viewmat = self._get_viewmat_from_trackbars()
-            viewmat = self._get_viewmat_from_trackbars()
-            viewmat_np = viewmat.cpu().numpy() # w2c
+            viewmat = self.view_mat_progress.clone()
+            viewmat_np = viewmat.cpu().numpy()  # w2c
             world_to_pcd = np.eye(4)
-            world_to_pcd[:3, :3] = np.array([
-                self.view_direction,
-                np.cross(-self.upvector, self.view_direction),
-                -self.upvector
-            ]).T
+            world_to_pcd[:3, :3] = np.array(
+                [
+                    self.view_direction,
+                    np.cross(-self.upvector, self.view_direction),
+                    -self.upvector,
+                ]
+            ).T
             world_to_pcd[:3, 3] = self.center_point
             pcd_to_world = np.linalg.inv(world_to_pcd)
             # camera_coordinates = viewmat @ world_to_pcd @ transform @ pcd_to_world @ pcd_coods
             # camera_coordinates = viewmat_new @ pcd_coords
             # ie. viewmat_new = viewmat @ world_to_pcd @ transform @ pcd_to_world
             transform = np.eye(4)
-            transform = get_rpy_matrix(0,0, dx * 0.01)
+            height, width = self.height, self.width
+            if self.is_shift_pressed:
+                viewmat_np[0, 3] += dx / width * 10
+                viewmat_np[1, 3] += dy / height * 10
+            else:
+                # Rotation of the world
+                c2pcd = np.linalg.inv(viewmat_np)
+                c2w = pcd_to_world @ c2pcd
+                direction_with_respect_to_world = -c2w[:3, 2]
+                lambda_ = -c2w[2, 3] / direction_with_respect_to_world[2]
+                intersection_point = (
+                    c2w[:3, 3] + lambda_ * direction_with_respect_to_world
+                )
 
-            # viewmat_np[:3, :3] = np.eye(3)  # Reset rotation part
-            # viewmat_np = viewmat_np @ world_to_pcd @ transform @ pcd_to_world
-            c2pcd = np.linalg.inv(viewmat_np)
-            c2w = pcd_to_world @ c2pcd
+                world_to_intersection = np.eye(4)
+                world_to_intersection[:3, 3] = -intersection_point
+                intersection_to_world = np.linalg.inv(world_to_intersection)
+                transform = get_rpy_matrix(0, 0, dx / width * 10)
+                if self.is_alt_pressed:
+                    world_to_intersection = np.eye(4)
+                    intersection_to_world = np.eye(4)
 
-            viewmat_np = np.linalg.inv(c2w) @ get_rpy_matrix(dy*0.01, 0, 0) @ c2w @ viewmat_np
+                viewmat_np = (
+                    viewmat_np
+                    @ world_to_pcd
+                    @ intersection_to_world
+                    @ transform
+                    @ world_to_intersection
+                    @ pcd_to_world
+                )
 
-            viewmat_np = viewmat_np @ world_to_pcd @ transform @ pcd_to_world
+                # rotation of camera
+                viewmat_np[:3, :3] = get_rpy_matrix(dy /height * 10, 0, 0)[:3, :3] @ viewmat_np[:3,:3]
 
-            self.update_trackbars_from_viewmat(torch.tensor(viewmat_np).float().to(device))
 
+            self.update_trackbars_from_viewmat(
+                torch.tensor(viewmat_np).float().to(device)
+            )
 
 
 def main(args: Args):
