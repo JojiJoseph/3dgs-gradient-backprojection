@@ -160,7 +160,7 @@ def main(
 
     render_pca_f3dgs(
         splats,
-        f"{results_dir}/pca_f3dgs_gaussians_{feature}.gif",
+        f"{results_dir}/pca_f3dgs_frames_{feature}.gif",
         pca_on_gaussians=False,
         feedback=show_visual_feedback,
     )
