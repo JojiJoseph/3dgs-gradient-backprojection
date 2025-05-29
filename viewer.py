@@ -126,6 +126,41 @@ class Viewer:
         cv2.setTrackbarPos("Y", self.window_name, int(world_to_camera[1, 3] * 100))
         cv2.setTrackbarPos("Z", self.window_name, int(world_to_camera[2, 3] * 100))
 
+    def get_top_view_viewmat(self, viewmat):
+        if isinstance(viewmat, torch.Tensor):
+            viewmat = viewmat.cpu().numpy()
+        if not self.turntable:
+            warnings.warn("Top view is only available in turntable mode.")
+            return viewmat
+        world_to_pcd = np.eye(4)
+
+        # Trick: just put the new axes in columns, done!
+        world_to_pcd[:3, :3] = np.array(
+            [
+                self.view_direction,
+                np.cross(self.upvector, self.view_direction),
+                self.upvector,
+            ]
+        ).T
+        world_to_pcd[:3, 3] = self.center_point
+        pcd_to_world = np.linalg.inv(world_to_pcd)
+
+        world_to_camera = np.eye(4)
+        world_to_camera[:3, :3] = np.array([
+            [1, 0, 0],
+            [0, -1, 0],
+            [0, 0, -1],])
+        world_to_camera_before = viewmat @ world_to_pcd
+        dist = np.linalg.norm(world_to_camera_before[:3, 3])
+        world_to_camera[:3, 3] = np.array([0, 0, dist])
+
+        # cam_point = world_to_camera @ pcd_to_world @ pcd_coord
+        # cam_point = viewmat @ pcd_coord
+        # viewmat = world_to_camera @ pcd_to_world 
+        viewmat = world_to_camera @ pcd_to_world# @ pcd_to_world
+        viewmat = torch.tensor(viewmat).float().to(device)
+        return viewmat
+
     def _get_viewmat_from_trackbars(self):
         roll = cv2.getTrackbarPos("Roll", self.window_name)
         pitch = cv2.getTrackbarPos("Pitch", self.window_name)
@@ -204,7 +239,7 @@ class Viewer:
             viewmat_np = viewmat.cpu().numpy()
             c2w = np.linalg.inv(viewmat_np)
             center_point += c2w[:3, 3].squeeze()  # camera position
-            upvector_sum += c2w[:3, 1].squeeze()  # up direction
+            upvector_sum += -c2w[:3, 1].squeeze()  # up direction
             view_direction_sum += c2w[:3, 2].squeeze()  # viewing direction
 
         # Average position and orientation vectors
@@ -233,7 +268,7 @@ class Viewer:
     def visualize_world_frame(self, output_cv, viewmat):
         viewmat_np = viewmat.cpu().numpy()
         T = np.eye(4)
-        z_axis = -self.upvector
+        z_axis = self.upvector
         x_axis = self.view_direction
         y_axis = np.cross(z_axis, x_axis)
         T[:3, :3] = np.array([x_axis, y_axis, z_axis]).T
@@ -296,6 +331,15 @@ class Viewer:
             elif key == ord("d"):
                 viewmat[0, 3] -= delta
             self.update_trackbars_from_viewmat(viewmat)
+        # if key != 255:
+        #     print(f"Key pressed: {key}")
+        if key in [ord("7")]:
+            viewmat = self.get_top_view_viewmat(viewmat)
+            self.update_trackbars_from_viewmat(viewmat)
+            # Reset viewmat to the initial world frame
+            # self.update_trackbars_from_viewmat(
+            #     self.get_top_view_viewmat(viewmat)
+            # )
         return True  # Continue the viewer loop
 
     def handle_mouse_event(self, event, x, y, flags, param):
@@ -330,8 +374,8 @@ class Viewer:
             world_to_pcd[:3, :3] = np.array(
                 [
                     self.view_direction,
-                    np.cross(-self.upvector, self.view_direction),
-                    -self.upvector,
+                    np.cross(self.upvector, self.view_direction),
+                    self.upvector,
                 ]
             ).T
             world_to_pcd[:3, 3] = self.center_point
