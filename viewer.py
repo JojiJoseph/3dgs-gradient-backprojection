@@ -126,7 +126,7 @@ class Viewer:
         cv2.setTrackbarPos("Y", self.window_name, int(world_to_camera[1, 3] * 100))
         cv2.setTrackbarPos("Z", self.window_name, int(world_to_camera[2, 3] * 100))
 
-    def get_top_view_viewmat(self, viewmat):
+    def get_special_viewmat(self, viewmat, side="top"):
         if isinstance(viewmat, torch.Tensor):
             viewmat = viewmat.cpu().numpy()
         if not self.turntable:
@@ -146,18 +146,41 @@ class Viewer:
         pcd_to_world = np.linalg.inv(world_to_pcd)
 
         world_to_camera = np.eye(4)
-        world_to_camera[:3, :3] = np.array([
-            [1, 0, 0],
-            [0, -1, 0],
-            [0, 0, -1],])
+        if side == "top":
+            world_to_camera[:3, :3] = np.array(
+                [
+                    [1, 0, 0],
+                    [0, -1, 0],
+                    [0, 0, -1],
+                ]
+            ).T
+        elif side == "front":
+            world_to_camera[:3, :3] = np.array(
+                [
+                    [1, 0, 0],
+                    [0, 0, 1],
+                    [0, -1, 0],
+                ]
+            ).T
+        elif side == "right":
+            world_to_camera[:3, :3] = np.array(
+                [
+                    [0, 0, -1],
+                    [1, 0, 0],
+                    [0, -1, 0],
+                ]
+            ).T
+        else:
+            warnings.warn(f"Unknown view type: {side}.")
+
         world_to_camera_before = viewmat @ world_to_pcd
         dist = np.linalg.norm(world_to_camera_before[:3, 3])
         world_to_camera[:3, 3] = np.array([0, 0, dist])
 
         # cam_point = world_to_camera @ pcd_to_world @ pcd_coord
         # cam_point = viewmat @ pcd_coord
-        # viewmat = world_to_camera @ pcd_to_world 
-        viewmat = world_to_camera @ pcd_to_world# @ pcd_to_world
+        # viewmat = world_to_camera @ pcd_to_world
+        viewmat = world_to_camera @ pcd_to_world
         viewmat = torch.tensor(viewmat).float().to(device)
         return viewmat
 
@@ -331,15 +354,15 @@ class Viewer:
             elif key == ord("d"):
                 viewmat[0, 3] -= delta
             self.update_trackbars_from_viewmat(viewmat)
-        # if key != 255:
-        #     print(f"Key pressed: {key}")
         if key in [ord("7")]:
-            viewmat = self.get_top_view_viewmat(viewmat)
+            viewmat = self.get_special_viewmat(viewmat, side="top")
             self.update_trackbars_from_viewmat(viewmat)
-            # Reset viewmat to the initial world frame
-            # self.update_trackbars_from_viewmat(
-            #     self.get_top_view_viewmat(viewmat)
-            # )
+        elif key in [ord("8")]:
+            viewmat = self.get_special_viewmat(viewmat, side="front")
+            self.update_trackbars_from_viewmat(viewmat)
+        elif key in [ord("9")]:
+            viewmat = self.get_special_viewmat(viewmat, side="right")
+            self.update_trackbars_from_viewmat(viewmat)
         return True  # Continue the viewer loop
 
     def handle_mouse_event(self, event, x, y, flags, param):
@@ -361,7 +384,7 @@ class Viewer:
 
             if self.is_ctrl_pressed:
                 viewmat = self._get_viewmat_from_trackbars()
-                viewmat[2,3] += dy / self.height * 10  # Move camera forward/backward
+                viewmat[2, 3] += dy / self.height * 10  # Move camera forward/backward
                 self.update_trackbars_from_viewmat(viewmat)
                 self.mouse_x = x
                 self.mouse_y = y
@@ -416,8 +439,9 @@ class Viewer:
                 )
 
                 # rotation of camera
-                viewmat_np[:3, :3] = get_rpy_matrix(dy /height * 10, 0, 0)[:3, :3] @ viewmat_np[:3,:3]
-
+                viewmat_np[:3, :3] = (
+                    get_rpy_matrix(dy / height * 10, 0, 0)[:3, :3] @ viewmat_np[:3, :3]
+                )
 
             self.update_trackbars_from_viewmat(
                 torch.tensor(viewmat_np).float().to(device)
