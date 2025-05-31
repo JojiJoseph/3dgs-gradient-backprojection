@@ -80,6 +80,16 @@ def get_mask3d_lseg(splats, features, prompt, neg_prompt, threshold=None):
 
     return mask_3d, mask_3d_inv
 
+COLOR_TO_RGB = {
+    "red": [1.0, 0.0, 0.0],
+    "green": [0.0, 1.0, 0.0],
+    "blue": [0.0, 0.0, 1.0],
+    "yellow": [1.0, 1.0, 0.0],
+    "cyan": [0.0, 1.0, 1.0],
+    "magenta": [1.0, 0.0, 1.0],
+    "white": [1.0, 1.0, 1.0],
+    "black": [0.0, 0.0, 0.0],
+}
 
 class Assistant:
     def __init__(self):
@@ -88,24 +98,17 @@ class Assistant:
         model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.bfloat16, device_map="auto")
         self.model = model
         self.tokenizer = tokenizer
-        self.system_prompt = [
-                # {
-                #     "role": "user",
-                #     "content":"""
-                #     You are 3DGS viewer, a 3D Gaussian Splatting viewer.
-                    
-                #     Currently, you can create viewmatrices as per the user's request. You select views by outputing `{"request": "change_view", "side": <side>}`, where side is one of `top`, `front`, `right`.
-                    
-                #     If you are not sure what is users request output `{'request':'unknown'}""",
 
-                # },
+        # Emulating system prompt with a series of example interactions
+        self.system_prompt = [
                 {
                     "role": "user",
-                    "content": (
-                        "You are a 3DGS viewer assistant. You understand commands like changing the view (top, front, right) and segment 3d gaussians and exiting the application. "
-                        "Always respond in strict JSON format: {\"request\": \"<type>\", \"side\": \"<side>\"} or {\"request\": \"exit\"}. "
-                        "If the command is unclear, respond with {\"request\": \"unknown\"}."
-                    ),
+                    "content": """
+                        You are a 3DGS viewer assistant. You understand commands like changing the view (top, front, right),
+                        segment 3d gaussians, change color, and exiting the application.
+                        Always respond in strict JSON format: {"request": "<type>", "side": "<side>"} or {"request": "exit"}.
+                        If the command is unclear, respond with {"request": "unknown"}.
+                    """,
                 },
                 {
                     "role": "assistant",
@@ -243,6 +246,32 @@ class Assistant:
                     {"request": "reset_segmentation"}
                     """,
                 },
+                {
+                    "role": "user",
+                    "content": "Change the color of grass to red.",
+                }, {
+                    "role": "assistant",
+                    "content": """
+                    {"request": "change_color", "object": "grass", "color": "red"}
+                    """,
+                },
+                {
+                    "role": "user",
+                    "content": "Change the color of table to blue.",
+                }, {
+                    "role": "assistant",
+                    "content": """
+                    {"request": "change_color", "object": "table", "color": "blue"}
+                    """,
+                }, {
+                    "role": "user",
+                    "content": "Reset the color of all objects.",
+                }, {
+                    "role": "assistant",
+                    "content": """
+                    {"request": "reset_color"}
+                    """,
+                }
             ]
         self.pipeline = pipeline(
             "text-generation",
@@ -319,6 +348,7 @@ class ViewerWithAssistant(Viewer):
         self.mask3d = None
         print(splats.keys())
         self.opacities_backup = torch.sigmoid(splats["opacity"].clone().detach())
+        self.colors_backup = self.colors.clone().detach()
     def handle_key_press(self, key, data):
         if key == ord("`"):
             self.assistant_mode = True
@@ -385,6 +415,24 @@ class ViewerWithAssistant(Viewer):
                 self.opacities = self.opacities_backup.clone().detach()
                 self.mask3d = None
                 print("Segmentation reset.")
+            if json_response["request"] == "change_color":
+                object_name = json_response.get("object", "")
+                color = json_response.get("color", "white")
+                if color not in COLOR_TO_RGB:
+                    warnings.warn(f"Color '{color}' is not recognized. Please change COLOR_TO_RGB dictionary.")
+                else:
+                    features = self.splats["lseg"]
+                    mask3d, mask3d_inv = get_mask3d_lseg(
+                        self.splats,
+                        features,
+                        prompt=object_name,
+                        neg_prompt="other",
+                        # threshold=0.5,
+                    )
+                    self.colors[mask3d,0,:] = (torch.tensor(COLOR_TO_RGB[color], device=device) - 0.5) / 0.2820947917738781
+            if json_response["request"] == "reset_color":
+                self.mask3d = None
+                self.colors = self.colors_backup.clone().detach()
             if json_response["request"] == "unknown":
                 warnings.warn(
                     f"Assistant response is unknown: {json_response}. Please try again."
