@@ -9,6 +9,7 @@ import clip
 from scipy.spatial.transform import Rotation as scipyR
 import pycolmap_scene_manager as pycolmap
 import warnings
+from torchvision.transforms import functional as TF
 
 import numpy as np
 import json
@@ -429,7 +430,9 @@ class ViewerWithAssistant(Viewer):
                         neg_prompt="other",
                         # threshold=0.5,
                     )
-                    self.colors[mask3d,0,:] = (torch.tensor(COLOR_TO_RGB[color], device=device) - 0.5) / 0.2820947917738781
+                    colors = self.colors_backup[mask3d, 0, :].clone().detach() * 0.2820947917738781 + 0.5
+                    grays = TF.rgb_to_grayscale(colors.permute(1,0).reshape(1,3,-1,1))[0,0]
+                    self.colors[mask3d,0,:] = (torch.tensor(COLOR_TO_RGB[color], device=device)*grays[:,0:1] - 0.5) / 0.2820947917738781
             if json_response["request"] == "reset_color":
                 self.mask3d = None
                 self.colors = self.colors_backup.clone().detach()
