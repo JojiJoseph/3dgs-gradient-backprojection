@@ -328,7 +328,7 @@ class Args:
         None  # [Deprecated] Use --format instead. Provided for backward compatibility.
     )
     data_factor: int = 4  # Downscaling factor for the renderings.
-    turntable: bool = False  # Whether to use a turntable mode for the viewer.
+    turntable: bool = True  # Whether to use a turntable mode for the viewer.
     lseg_checkpoint: Optional[str] = None  # Path to the LSEG checkpoint for segmentation, if available.
 
 

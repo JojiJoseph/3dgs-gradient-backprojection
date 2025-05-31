@@ -57,7 +57,13 @@ python click_and_segment.py
 
 Click left button to select positive visual prompts and middle button to select negative visual prompts. `ctrl+lbutton` and `ctrl+mbutton` to remove selected prompts.
 
+**Application - Editing with LLM**
 
+```bash
+python viewer_with_llm.py --checkpoint data/garden/ckpts/ckpt_29999_rank0.pt --data-dir data/garden  --lseg-checkpoint results/garden/features_lseg.pt
+```
+
+Press ` to start prompting. At present it supports only single query at a time. Queries can be of changing view, segment and change color.
 
 ## Acknowledgements
 
