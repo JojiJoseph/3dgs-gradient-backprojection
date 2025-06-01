@@ -63,7 +63,13 @@ Click left button to select positive visual prompts and middle button to select 
 python viewer_with_llm.py --checkpoint data/garden/ckpts/ckpt_29999_rank0.pt --data-dir data/garden  --lseg-checkpoint results/garden/features_lseg.pt
 ```
 
-Press ` to start prompting. At present it supports only single query at a time. Queries can be of changing view, segment and change color.
+Press ` to start prompting. At present it supports only a single query at a time. Queries can be of changing view, segment and change color.
+
+
+
+https://github.com/user-attachments/assets/126583ab-1f6f-4cc3-ab60-21453a7f3f5a
+
+
 
 ## Acknowledgements
 
