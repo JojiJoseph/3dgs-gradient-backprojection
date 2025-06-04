@@ -322,8 +322,8 @@ class Args:
     data_dir: (
         str  # Path to the COLMAP project directory containing sparse reconstruction.
     )
-    format: Optional[Literal["inria", "gsplat"]] = (
-        "gsplat"  # Format of the checkpoint: 'inria' (original 3DGS) or 'gsplat'.
+    format: Optional[Literal["inria", "gsplat", "ply"]] = (
+        "gsplat"  # Format of the checkpoint: 'inria' (original 3DGS), 'gsplat', or 'ply'.
     )
     rasterizer: Optional[Literal["inria", "gsplat"]] = (
         None  # [Deprecated] Use --format instead. Provided for backward compatibility.
