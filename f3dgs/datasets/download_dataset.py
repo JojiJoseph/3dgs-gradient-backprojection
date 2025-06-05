@@ -41,7 +41,7 @@ class DownloadData:
         ]
         try:
             subprocess.run(download_command, check=True)
-            print("File file downloaded succesfully.")
+            print("File downloaded successfully.")
         except subprocess.CalledProcessError as e:
             print(f"Error downloading file: {e}")
 

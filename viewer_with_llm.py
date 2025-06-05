@@ -62,7 +62,7 @@ def get_mask3d_lseg(splats, features, prompt, neg_prompt, threshold=None):
     # Preprocess the text prompt
     clip_text_encoder = net.clip_pretrained.encode_text
 
-    positve_prompts_length = len(prompt.split(";"))
+    positive_prompts_length = len(prompt.split(";"))
 
     prompts = prompt.split(";") + neg_prompt.split(";")
 
@@ -74,7 +74,7 @@ def get_mask3d_lseg(splats, features, prompt, neg_prompt, threshold=None):
 
     features = torch.nn.functional.normalize(features, dim=1)
     score = features @ text_feat_norm.float().T
-    mask_3d = score[:, :positve_prompts_length].max(dim=1)[0] > score[:, positve_prompts_length:].max(dim=1)[0]
+    mask_3d = score[:, :positive_prompts_length].max(dim=1)[0] > score[:, positive_prompts_length:].max(dim=1)[0]
     if threshold is not None:
         mask_3d = mask_3d & (score[:, 0] > threshold)
     mask_3d_inv = ~mask_3d
