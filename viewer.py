@@ -429,6 +429,12 @@ class Viewer:
                     world_to_intersection = np.eye(4)
                     intersection_to_world = np.eye(4)
 
+                # rotation of camera
+                viewmat_np[:3, :3] = (
+                    get_rpy_matrix(dy / height * 10, 0, 0)[:3, :3] @ viewmat_np[:3, :3]
+                )
+
+                # rotation of the world
                 viewmat_np = (
                     viewmat_np
                     @ world_to_pcd
@@ -438,10 +444,6 @@ class Viewer:
                     @ pcd_to_world
                 )
 
-                # rotation of camera
-                viewmat_np[:3, :3] = (
-                    get_rpy_matrix(dy / height * 10, 0, 0)[:3, :3] @ viewmat_np[:3, :3]
-                )
 
             self.update_trackbars_from_viewmat(
                 torch.tensor(viewmat_np).float().to(device)
