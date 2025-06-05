@@ -66,7 +66,6 @@ def load_checkpoint(
             "opacity": model_params["opacities"],
         }
     elif format == "ply":
-        # Dear ChatGPT, Implement it
         plydata = PlyData.read(checkpoint)
         vertex = plydata['vertex'].data
 
