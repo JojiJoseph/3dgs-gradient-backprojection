@@ -52,6 +52,46 @@ class ViewerArgs:
     turntable: bool = False
 
 
+class SceneRenderer:
+    def __init__(self, parent):
+        self.parent = parent
+        self.sh_degree = 3  # Optional: expose as a config
+
+    def render(self, viewmat, scaling, anaglyph=False):
+        return self._render_anaglyph(viewmat, scaling) if anaglyph else self._render_mono(viewmat, scaling)
+
+    def _render_mono(self, viewmat, scaling):
+        p = self.parent
+        output, _, _ = rasterization(
+            p.means,
+            p.quats,
+            p.scales * scaling,
+            p.opacities,
+            p.colors,
+            viewmat[None],
+            p.camera_matrix[None],
+            width=p.width,
+            height=p.height,
+            sh_degree=self.sh_degree,
+        )
+        return np.ascontiguousarray(torch_to_cv(output[0]))
+
+    def _render_anaglyph(self, viewmat, scaling):
+        left = self._render_mono(viewmat, scaling)
+        viewmat_right_eye = viewmat.clone()
+        viewmat_right_eye[0, 3] -= 0.05
+        right = self._render_mono(viewmat_right_eye, scaling)
+
+        left[..., :2] = 0  # Kill R/G
+        right[..., -1] = 0  # Kill B
+        return (
+            left + right,
+            np.ascontiguousarray(left),
+            np.ascontiguousarray(right),
+        )
+
+
+
 class Viewer:
     def __init__(self, splats, viewer_args):
         self.splats = None
@@ -59,10 +99,14 @@ class Viewer:
         self.width = None
         self.height = None
         self.viewmat = None
+        self.turntable = viewer_args.turntable
+        self._load_splats(splats)
+        self._init_gui()
+        self.renderer = SceneRenderer(self)
+
+    def _init_gui(self):
         self.window_name = "GSplat Explorer"
         self._init_sliders()
-        self._load_splats(splats)
-        self.turntable = viewer_args.turntable
         self.mouse_down = False
         self.mouse_x = 0
         self.mouse_y = 0
@@ -205,46 +249,7 @@ class Viewer:
 
         return viewmat
 
-    def render_gaussians(self, viewmat, scaling, anaglyph=False):
-        output, _, _ = rasterization(
-            self.means,
-            self.quats,
-            self.scales * scaling,
-            self.opacities,
-            self.colors,
-            viewmat[None],
-            self.camera_matrix[None],
-            width=self.width,
-            height=self.height,
-            sh_degree=3,
-        )
-        if not anaglyph:
-            return np.ascontiguousarray(torch_to_cv(output[0]))
-        left = torch_to_cv(output[0])
-        viewmat_right_eye = viewmat.clone()
-        viewmat_right_eye[0, 3] -= 0.05  # Offset for the right eye
-        output, _, _ = rasterization(
-            self.means,
-            self.quats,
-            self.scales * scaling,
-            self.opacities,
-            self.colors,
-            viewmat_right_eye[None],
-            self.camera_matrix[None],
-            width=self.width,
-            height=self.height,
-            sh_degree=3,
-        )
-        right = torch_to_cv(output[0])
-        left_copy = left.copy()
-        right_copy = right.copy()
-        left_copy[..., :2] = 0  # Set left eye's red and green channels to zero
-        right_copy[..., -1] = 0  # Set right eye's blue channel to zero
-        return (
-            left_copy + right_copy,
-            np.ascontiguousarray(left_copy),
-            np.ascontiguousarray(right_copy),
-        )
+    
 
     def compute_world_frame(self):
         """
@@ -288,17 +293,20 @@ class Viewer:
         self.view_direction = view_direction
         self.ortho_direction = ortho_direction
 
+
+    def _get_world_to_pcd(self):
+        T = np.eye(4)
+        T[:3, :3] = np.array(
+            [self.view_direction, self.ortho_direction, self.upvector]
+        ).T
+        T[:3, 3] = self.center_point
+        return T
+
     def visualize_world_frame(self, output_cv, viewmat):
         viewmat_np = viewmat.cpu().numpy()
-        T = np.eye(4)
-        z_axis = self.upvector
-        x_axis = self.view_direction
-        y_axis = np.cross(z_axis, x_axis)
-        T[:3, :3] = np.array([x_axis, y_axis, z_axis]).T
-        T[:3, 3] = self.center_point
-        T = viewmat_np @ T
-        rvec = cv2.Rodrigues(T[:3, :3])[0]
-        tvec = T[:3, 3]
+        world_to_camera = viewmat_np @ self._get_world_to_pcd()
+        rvec = cv2.Rodrigues(world_to_camera[:3, :3])[0]
+        tvec = world_to_camera[:3, 3]
         cv2.drawFrameAxes(
             output_cv,
             self.camera_matrix.cpu().numpy(),
@@ -319,9 +327,9 @@ class Viewer:
             viewmat = self._get_viewmat_from_trackbars()
 
             if self.show_anaglyph:
-                output_cv, _, _ = self.render_gaussians(viewmat, scaling, anaglyph=True)
+                output_cv, _, _ = self.renderer.render(viewmat, scaling, anaglyph=True)
             else:
-                output_cv = self.render_gaussians(viewmat, scaling)
+                output_cv = self.renderer.render(viewmat, scaling)
 
             if self.turntable:
                 self.visualize_world_frame(output_cv, viewmat)
@@ -338,116 +346,126 @@ class Viewer:
 
     def handle_key_press(self, key, data):
         viewmat = data["viewmat"]
-        if key == ord("q") or key == 27:
-            return False  # Exit the viewer
-        if key == ord("3"):
+        # Retain data as a dictionary for future use
+        if self._should_quit(key):
+            return False
+        if self._is_movement_key(key):
+            self._move_camera(key, viewmat)
+        elif key == ord("3"):
             self.show_anaglyph = not self.show_anaglyph
-        if key in [ord("w"), ord("a"), ord("s"), ord("d")]:
-            # Modify viewmat and sync UI
-            delta = 0.1
-            if key == ord("w"):
-                viewmat[2, 3] -= delta
-            elif key == ord("s"):
-                viewmat[2, 3] += delta
-            elif key == ord("a"):
-                viewmat[0, 3] += delta
-            elif key == ord("d"):
-                viewmat[0, 3] -= delta
-            self.update_trackbars_from_viewmat(viewmat)
-        if key in [ord("7")]:
-            viewmat = self.get_special_viewmat(viewmat, side="top")
-            self.update_trackbars_from_viewmat(viewmat)
-        elif key in [ord("8")]:
-            viewmat = self.get_special_viewmat(viewmat, side="front")
-            self.update_trackbars_from_viewmat(viewmat)
-        elif key in [ord("9")]:
-            viewmat = self.get_special_viewmat(viewmat, side="right")
-            self.update_trackbars_from_viewmat(viewmat)
-        return True  # Continue the viewer loop
+        elif key in [ord("7"), ord("8"), ord("9")]:
+            self._snap_to_view(key, viewmat)
+        return True
+
+    def _should_quit(self, key):
+        return key == ord("q") or key == 27
+
+    def _is_movement_key(self, key):
+        return key in [ord("w"), ord("a"), ord("s"), ord("d")]
+
+    def _move_camera(self, key, viewmat):
+        delta = 0.1
+        if key == ord("w"):
+            viewmat[2, 3] -= delta
+        elif key == ord("s"):
+            viewmat[2, 3] += delta
+        elif key == ord("a"):
+            viewmat[0, 3] += delta
+        elif key == ord("d"):
+            viewmat[0, 3] -= delta
+        self.update_trackbars_from_viewmat(viewmat)
+
+    def _snap_to_view(self, key, viewmat):
+        side_map = {ord("7"): "top", ord("8"): "front", ord("9"): "right"}
+        side = side_map.get(key)
+        new_viewmat = self.get_special_viewmat(viewmat, side=side)
+        self.update_trackbars_from_viewmat(new_viewmat)
 
     def handle_mouse_event(self, event, x, y, flags, param):
         if not self.turntable:
             return
+
         if event == cv2.EVENT_LBUTTONDOWN:
-            self.mouse_down = True
-            self.mouse_x = x
-            self.mouse_y = y
-            self.view_mat_progress = self._get_viewmat_from_trackbars()
-            self.is_alt_pressed = flags & cv2.EVENT_FLAG_ALTKEY
-            self.is_shift_pressed = flags & cv2.EVENT_FLAG_SHIFTKEY
-            self.is_ctrl_pressed = flags & cv2.EVENT_FLAG_CTRLKEY
+            self._start_mouse_drag(x, y, flags)
+
         elif event == cv2.EVENT_LBUTTONUP:
             self.mouse_down = False
+
         elif event == cv2.EVENT_MOUSEMOVE and self.mouse_down:
-            dx = x - self.mouse_x
-            dy = y - self.mouse_y
+            self._handle_mouse_drag(x, y)
 
-            if self.is_ctrl_pressed:
-                viewmat = self._get_viewmat_from_trackbars()
-                viewmat[2, 3] += dy / self.height * 10  # Move camera forward/backward
-                self.update_trackbars_from_viewmat(viewmat)
-                self.mouse_x = x
-                self.mouse_y = y
-                return
+    def _start_mouse_drag(self, x, y, flags):
+        self.mouse_down = True
+        self.mouse_x = x
+        self.mouse_y = y
+        self.view_mat_progress = self._get_viewmat_from_trackbars()
+        self.is_alt_pressed = flags & cv2.EVENT_FLAG_ALTKEY
+        self.is_shift_pressed = flags & cv2.EVENT_FLAG_SHIFTKEY
+        self.is_ctrl_pressed = flags & cv2.EVENT_FLAG_CTRLKEY
 
-            # viewmat = self._get_viewmat_from_trackbars()
-            viewmat = self.view_mat_progress.clone()
-            viewmat_np = viewmat.cpu().numpy()  # w2c
-            world_to_pcd = np.eye(4)
-            world_to_pcd[:3, :3] = np.array(
-                [
-                    self.view_direction,
-                    np.cross(self.upvector, self.view_direction),
-                    self.upvector,
-                ]
-            ).T
-            world_to_pcd[:3, 3] = self.center_point
-            pcd_to_world = np.linalg.inv(world_to_pcd)
-            # camera_coordinates = viewmat @ world_to_pcd @ transform @ pcd_to_world @ pcd_coods
-            # camera_coordinates = viewmat_new @ pcd_coords
-            # ie. viewmat_new = viewmat @ world_to_pcd @ transform @ pcd_to_world
-            transform = np.eye(4)
-            height, width = self.height, self.width
-            if self.is_shift_pressed:
-                viewmat_np[0, 3] += dx / width * 10
-                viewmat_np[1, 3] += dy / height * 10
-            else:
-                # Rotation of the world
-                c2pcd = np.linalg.inv(viewmat_np)
-                c2w = pcd_to_world @ c2pcd
-                direction_with_respect_to_world = -c2w[:3, 2]
-                lambda_ = -c2w[2, 3] / direction_with_respect_to_world[2]
-                intersection_point = (
-                    c2w[:3, 3] + lambda_ * direction_with_respect_to_world
-                )
+    def _handle_mouse_drag(self, x, y):
+        dx = x - self.mouse_x
+        dy = y - self.mouse_y
 
-                world_to_intersection = np.eye(4)
-                world_to_intersection[:3, 3] = -intersection_point
-                intersection_to_world = np.linalg.inv(world_to_intersection)
-                transform = get_rpy_matrix(0, 0, dx / width * 10)
-                if self.is_alt_pressed:
-                    world_to_intersection = np.eye(4)
-                    intersection_to_world = np.eye(4)
+        if self.is_ctrl_pressed:
+            self._translate_forward_backward(dy)
+            self.mouse_x = x
+            self.mouse_y = y
+            # return
+        elif self.is_shift_pressed:
+            self._translate_shift(dx, dy)
+        else:
+            self._rotate_view(dx, dy)
 
-                # rotation of camera
-                viewmat_np[:3, :3] = (
-                    get_rpy_matrix(dy / height * 10, 0, 0)[:3, :3] @ viewmat_np[:3, :3]
-                )
+    def _translate_forward_backward(self, dy):
+        viewmat = self._get_viewmat_from_trackbars()
+        viewmat[2, 3] += dy / self.height * 10
+        self.update_trackbars_from_viewmat(viewmat)
 
-                # rotation of the world
-                viewmat_np = (
-                    viewmat_np
-                    @ world_to_pcd
-                    @ intersection_to_world
-                    @ transform
-                    @ world_to_intersection
-                    @ pcd_to_world
-                )
+    def _translate_shift(self, dx, dy):
+        viewmat_np = self.view_mat_progress.clone().cpu().numpy()
+        width, height = self.width, self.height
+        viewmat_np[0, 3] += dx / width * 10
+        viewmat_np[1, 3] += dy / height * 10
+        self.update_trackbars_from_viewmat(torch.tensor(viewmat_np).float().to(device))
 
+    def _rotate_view(self, dx, dy):
+        width, height = self.width, self.height
+        viewmat_np = self.view_mat_progress.clone().cpu().numpy()
 
-            self.update_trackbars_from_viewmat(
-                torch.tensor(viewmat_np).float().to(device)
-            )
+        world_to_pcd = self._get_world_to_pcd()
+        pcd_to_world = np.linalg.inv(world_to_pcd)
+
+        c2pcd = np.linalg.inv(viewmat_np)
+        c2w = pcd_to_world @ c2pcd
+        dir_in_world = c2w[:3, 2]
+        lambda_ = -c2w[2, 3] / dir_in_world[2]
+        intersection_point = c2w[:3, 3] + lambda_ * dir_in_world
+
+        world_to_inter = np.eye(4)
+        world_to_inter[:3, 3] = -intersection_point
+        inter_to_world = np.linalg.inv(world_to_inter)
+
+        if self.is_alt_pressed:
+            world_to_inter = np.eye(4)
+            inter_to_world = np.eye(4)
+
+        # Apply camera rotation
+        viewmat_np[:3, :3] = (
+            get_rpy_matrix(dy / height * 10, 0, 0)[:3, :3] @ viewmat_np[:3, :3]
+        )
+        # Apply world rotation
+        transform = get_rpy_matrix(0, 0, dx / width * 10)
+        viewmat_np = (
+            viewmat_np
+            @ world_to_pcd
+            @ inter_to_world
+            @ transform
+            @ world_to_inter
+            @ pcd_to_world
+        )
+
+        self.update_trackbars_from_viewmat(torch.tensor(viewmat_np).float().to(device))
 
 
 def main(args: Args):
