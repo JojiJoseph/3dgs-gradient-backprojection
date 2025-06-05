@@ -1,6 +1,6 @@
 # README
 
-The code need to be refactored and not documented.
+The code needs to be refactored and is not documented.
 
 To run,
 
