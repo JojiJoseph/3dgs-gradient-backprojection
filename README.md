@@ -33,7 +33,7 @@ python backproject.py --help
 
 **Segmentation**
 
-Once backprojection is completed, run the following to see the segmenation results.
+Once backprojection is completed, run the following to see the segmentation results.
 
 ```bash
 python segment.py --help
