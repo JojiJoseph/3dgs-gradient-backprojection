@@ -41,7 +41,9 @@ def get_mask3d_lseg(splats, features, prompt, neg_prompt, threshold=None):
     # Preprocess the text prompt
     clip_text_encoder = net.clip_pretrained.encode_text
 
-    prompts = [prompt] + neg_prompt.split(";")
+    pos_prompt_length = len(prompt.split(";"))
+
+    prompts = prompt.split(";") + neg_prompt.split(";")
 
     prompt = clip.tokenize(prompts)
     prompt = prompt.cuda()
@@ -51,7 +53,7 @@ def get_mask3d_lseg(splats, features, prompt, neg_prompt, threshold=None):
 
     features = torch.nn.functional.normalize(features, dim=1)
     score = features @ text_feat_norm.float().T
-    mask_3d = score[:, 0] > score[:, 1:].max(dim=1)[0]
+    mask_3d = score[:, :pos_prompt_length].max(dim=1)[0] > score[:, pos_prompt_length:].max(dim=1)[0]
     if threshold is not None:
         mask_3d = mask_3d & (score[:, 0] > threshold)
     mask_3d_inv = ~mask_3d
@@ -134,7 +136,8 @@ def render_to_gif(
             cv2.imshow("Rendering", frame[..., ::-1])
             cv2.imwrite(f"{aux_dir}/{image.name}", frame[..., ::-1])
             cv2.waitKey(1)
-    imageio.mimsave(output_path, frames, fps=10, loop=0)
+    if output_path is not None:
+        imageio.mimsave(output_path, frames, fps=10, loop=0)
     if feedback:
         cv2.destroyAllWindows()
 
@@ -177,8 +180,9 @@ def render_mask_2d_to_gif(
 
     # Preprocess the text prompt
     clip_text_encoder = net.clip_pretrained.encode_text
+    pos_prompt_length = len(prompt.split(";"))
 
-    prompts = [prompt] + neg_prompt.split(";")
+    prompts = prompt.split(";") + neg_prompt.split(";")
 
     prompt = clip.tokenize(prompts)
     prompt = prompt.cuda()
@@ -217,7 +221,7 @@ def render_mask_2d_to_gif(
         feats_rendered = feats_rendered[0]
         feats_rendered = torch.nn.functional.normalize(feats_rendered, dim=-1)
         score = feats_rendered @ text_feat_norm.float().T
-        mask2d = score[..., 0] > score[..., 1:].max(dim=2)[0]
+        mask2d = score[..., :pos_prompt_length].max(dim=2)[0] > score[..., pos_prompt_length:].max(dim=2)[0]
         # print(mask2d.shape)
         mask2d = mask2d[..., None].detach().cpu().numpy()
         frame = np.clip(output[0].detach().cpu().numpy() * 255, 0, 255).astype(np.uint8)
@@ -230,7 +234,8 @@ def render_mask_2d_to_gif(
             cv2.imshow("Rendering", frame[..., ::-1])
             cv2.imwrite(f"{aux_dir}/{image.name}", frame[..., ::-1])
             cv2.waitKey(1)
-    imageio.mimsave(output_path, frames, fps=10, loop=0)
+    if output_path is not None:
+        imageio.mimsave(output_path, frames, fps=10, loop=0)
     if feedback:
         cv2.destroyAllWindows()
 
