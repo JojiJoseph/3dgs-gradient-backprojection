@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 import time
+import torch.nn.functional as F
 
 from lseg import LSegNet
 import os
@@ -68,11 +69,26 @@ model = EncoderDecoder().to(device)
 opt = torch.optim.Adam(model.parameters(), lr=1e-4)
 text_feat_norm = text_feat_norm.detach()
 
+
+
+
+def latent_cosine_preservation_loss(z, x):
+    z_norm = F.normalize(z, dim=1)
+    x_norm = F.normalize(x, dim=1)
+
+    cosine_z = z_norm @ z_norm.T
+    cosine_x = x_norm @ x_norm.T
+
+    return F.mse_loss(cosine_z, cosine_x)
+
+
 t1 = time.time()
 for i in range(100000):
     x, y = model(text_feat_norm)
     y = torch.nn.functional.normalize(y, dim=1)
-    loss = torch.nn.functional.mse_loss(text_feat_norm, y)
+    loss1 = torch.nn.functional.mse_loss(text_feat_norm, y)
+    loss2 = latent_cosine_preservation_loss(x, text_feat_norm)
+    loss = loss1 + loss2
     loss.backward()
     opt.step()
     opt.zero_grad()
