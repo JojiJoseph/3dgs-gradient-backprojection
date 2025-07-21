@@ -4,3 +4,6 @@ checkpoints
 .ckpt
 .pt
 .pth
+temp_*
+
+symlink_*.py
