@@ -17,11 +17,11 @@ matplotlib.use("TkAgg")
 from lseg import LSegNet
 from utils import (
     create_checkerboard,
+    get_viewmat_from_blender_frame,
     load_checkpoint_blender,
     prune_by_gradients,
     test_proper_pruning,
-    get_viewmat_from_colmap_image,
-    load_checkpoint,
+    get_viewmat_from_colmap_image
 )
 
 
@@ -143,8 +143,8 @@ def render_to_gif_blender(
             cv2.imshow("Rendering", frame[..., ::-1])
             cv2.imwrite(f"{aux_dir}/{image_name}", frame[..., ::-1])
             cv2.waitKey(1)
-    # if output_path is not None:
-    #     imageio.mimsave(output_path, frames, fps=10, loop=0)
+    if output_path is not None:
+        imageio.mimsave(output_path, frames, fps=10, loop=0)
     if feedback:
         cv2.destroyAllWindows()
 
@@ -197,15 +197,14 @@ def render_mask_2d_to_gif_blender(
     text_feat = clip_text_encoder(prompt)  # N, 512, N - number of prompts
     text_feat_norm = torch.nn.functional.normalize(text_feat, dim=1)
 
-    # features = torch.nn.functional.normalize(features, dim=1)
+    
 
-    # for image in sorted(splats["colmap_project"].images.values(), key=lambda x: x.name):
-    #     viewmat = get_viewmat_from_colmap_image(image)
     for frame in tqdm(splats["transforms"]["frames"]):
         image_name = frame["file_path"].split("/")[-1]
-        viewmat = torch.tensor(frame["transform_matrix"]).float()#.to(device)
-        viewmat[:3, :3] = viewmat[:3, :3] @ torch.tensor(([1, 0, 0], [0, -1, 0], [0, 0, -1])).float()  # Flip Y axis
-        viewmat = torch.linalg.inv(viewmat)  # Convert to camera-to-world matrix
+        viewmat = get_viewmat_from_blender_frame(frame)
+        # viewmat = torch.tensor(frame["transform_matrix"]).float()#.to(device)
+        # viewmat[:3, :3] = viewmat[:3, :3] @ torch.tensor(([1, 0, 0], [0, -1, 0], [0, 0, -1])).float()  # Flip Y axis
+        # viewmat = torch.linalg.inv(viewmat)  # Convert to camera-to-world matrix
         output, alphas, meta = rasterization(
             means,
             quats,
@@ -246,8 +245,8 @@ def render_mask_2d_to_gif_blender(
             cv2.imshow("Rendering", frame[..., ::-1])
             cv2.imwrite(f"{aux_dir}/{image_name}", frame[..., ::-1])
             cv2.waitKey(1)
-    # if output_path is not None:
-    #     imageio.mimsave(output_path, frames, fps=10, loop=0)
+    if output_path is not None:
+        imageio.mimsave(output_path, frames, fps=10, loop=0)
     if feedback:
         cv2.destroyAllWindows()
 
@@ -271,7 +270,7 @@ def save_to_ckpt(
 
 
 def main(
-    data_dir: str = "./data/garden",  # colmap path
+    data_dir: str = "./data/garden",  # blender path
     checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt",  # checkpoint path, can generate from original 3DGS repo
     results_dir: str = "./results/garden",  # output path
     rasterizer: Literal[
