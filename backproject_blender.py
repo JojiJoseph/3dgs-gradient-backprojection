@@ -12,7 +12,7 @@ matplotlib.use("TkAgg") # To avoid conflict with cv2
 from tqdm import tqdm
 from lseg import LSegNet
 import cv2
-from utils import load_checkpoint_blender
+from utils import load_checkpoint_blender, get_viewmat_from_blender_frame
 
 
 def torch_to_cv(tensor):
@@ -280,6 +280,157 @@ def create_feature_field_lseg_blender(splats, use_cpu=False):
     gaussian_features[torch.isnan(gaussian_features)] = 0
     return gaussian_features
 
+def create_feature_field_identity(splats, use_cpu=False):
+    print(splats.keys())
+    print(splats["blender_img_dir"])
+    mask_seg_dir = os.path.join(splats["blender_img_dir"], "..", "masks_seg")
+    # exit()
+    # print(mask_seg_dir)
+    # exit()
+    device = "cpu" if use_cpu else "cuda"
+
+    net = LSegNet(
+        backbone="clip_vitl16_384",
+        features=256,
+        crop_size=480,
+        arch_option=0,
+        block_depth=0,
+        activation="lrelu",
+    )
+    # Load pre-trained weights
+    net.load_state_dict(torch.load("./checkpoints/lseg_minimal_e200.ckpt", map_location=device))
+    net.eval()
+    net.to(device)
+
+    means = splats["means"]
+    colors_dc = splats["features_dc"]
+    colors_rest = splats["features_rest"]
+    colors_all = torch.cat([colors_dc, colors_rest], dim=1)
+
+    colors = colors_dc[:, 0, :]  # * 0
+    colors_0 = colors_dc[:, 0, :] * 0
+    colors.to(device)
+    colors_0.to(device)
+
+    # colmap_project = splats["colmap_project"]
+
+    opacities = torch.sigmoid(splats["opacity"])
+    scales = torch.exp(splats["scaling"])
+    quats = splats["rotation"]
+    K = splats["camera_matrix"]
+    colors.requires_grad = True
+    colors_0.requires_grad = True
+
+    gaussian_features = torch.zeros(colors.shape[0], 4, device=colors.device)
+    gaussian_denoms = torch.ones(colors.shape[0], device=colors.device) * 1e-12
+
+    colors_feats = torch.zeros(colors.shape[0], 4, device=colors.device, requires_grad=True)
+    colors_feats_0 = torch.zeros(colors.shape[0], 3, device=colors.device, requires_grad=True)
+
+    codebook = np.array([
+        [0.0, 0.0, 0.0],  # Black
+        [255.0, 0, 0],  # Red
+        [0, 255.0, 0],  # Green
+        [0, 0, 255.0],  # Blue
+    ])
+
+    for frame in tqdm(splats["transforms"]["frames"]):
+
+        viewmat = get_viewmat_from_blender_frame(frame)
+        image_name = frame["file_path"].split("/")[-1]
+        mask_seg_path = os.path.join(mask_seg_dir, image_name)
+        mask_seg = cv2.imread(mask_seg_path, cv2.IMREAD_COLOR)
+        # Find codebook index for each pixel
+        mask_seg = cv2.cvtColor(mask_seg, cv2.COLOR_BGR2RGB)
+        mask_seg_indices = np.argmin(
+            np.linalg.norm(mask_seg[:, :, None] - codebook[None, None, :], axis=-1), axis=-1
+        )
+
+        mask_features = np.eye(len(codebook))[mask_seg_indices].astype(np.float32)
+        # print("Mask features shape:", mask_features.shape)
+
+        # print("Mask seg indices shape:", mask_seg_indices.shape)
+        # exit()
+
+        mask_features = torch.tensor(mask_features).float().to(device)
+
+        K = torch.tensor(splats["camera_matrix"]).float().to(device)
+        width = int(K[0, 2] * 2)
+        height = int(K[1, 2] * 2)
+
+        # with torch.no_grad():
+        #     output, _, meta = rasterization(
+        #         means,
+        #         quats,
+        #         scales,
+        #         opacities,
+        #         colors_all,
+        #         viewmat[None],
+        #         K[None],
+        #         width=width,
+        #         height=height,
+        #         sh_degree=3,
+        #     )
+
+            # output = torch.nn.functional.interpolate(
+            #     output.permute(0, 3, 1, 2).to(device),
+            #     size=(480, 480),
+            #     mode="bilinear",
+            # )
+            # output.to(device)
+            # feats = net.forward(output)
+            # feats = torch.nn.functional.normalize(feats, dim=1)
+            # feats = torch.nn.functional.interpolate(
+            #     feats, size=(height, width), mode="bilinear"
+            # )[0]
+            # feats = feats.permute(1, 2, 0)
+
+        output_for_grad, _, meta = rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            colors_feats,
+            viewmat[None],
+            K[None],
+            width=width,
+            height=height,
+        )
+
+        target = (output_for_grad[0].to(device) * mask_features).sum()
+        target.to(device)
+        target.backward()
+        colors_feats_copy = colors_feats.grad.clone()
+        colors_feats.grad.zero_()
+
+        output_for_grad, _, meta = rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            colors_feats_0,
+            viewmat[None],
+            K[None],
+            width=width,
+            height=height,
+        )
+
+        target_0 = (output_for_grad[0]).sum()
+        target_0.to(device)
+        target_0.backward()
+
+        gaussian_features += colors_feats_copy
+        gaussian_denoms += colors_feats_0.grad[:, 0]
+        colors_feats_0.grad.zero_()
+
+        # Clean up unused variables and free GPU memory
+        del viewmat, meta, _, output_for_grad, colors_feats_copy, target, target_0
+        torch.cuda.empty_cache()
+    gaussian_features = gaussian_features / gaussian_denoms[..., None]
+    gaussian_features = gaussian_features / gaussian_features.norm(dim=-1, keepdim=True)
+    # Replace nan values with 0
+    gaussian_features[torch.isnan(gaussian_features)] = 0
+    return gaussian_features
 
 def main(
     data_dir: str = "./data/garden",  # blender path
@@ -303,8 +454,8 @@ def main(
         checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
     )
 
-    features = create_feature_field_lseg_blender(splats, feature_field_batch_count, run_feature_field_on_cpu)
-    torch.save(features, f"{results_dir}/features_lseg.pt")
+    features = create_feature_field_identity(splats)
+    torch.save(features, f"{results_dir}/features_identity.pt")
 
 
 if __name__ == "__main__":
