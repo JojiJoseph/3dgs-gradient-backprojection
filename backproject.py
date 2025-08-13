@@ -9,8 +9,6 @@ import pycolmap_scene_manager as pycolmap
 import numpy as np
 import matplotlib
 from feature_extractors import (
-    DinoFeatureExtractor,
-    LSegFeatureExtractor,
     get_feature_extractor,
     BACKPROJECTION_FEATURE_EXTRACTORS,
 )
@@ -22,17 +20,15 @@ from lseg import LSegNet
 
 from utils import (
     load_checkpoint,
-    get_viewmat_from_colmap_image,
     prune_by_gradients,
     test_proper_pruning,
     get_frames,
 )
 
 
-
-
-
-def create_feature_field(splats, feature_type="lseg", use_cpu=False, percentage_frames=100, n_views=None):
+def create_feature_field(
+    splats, feature_type="lseg", use_cpu=False, percentage_frames=100, n_views=None
+):
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not use_cpu else "cpu"
     )
@@ -68,7 +64,9 @@ def create_feature_field(splats, feature_type="lseg", use_cpu=False, percentage_
     colors_feats_0.requires_grad = True
 
     print("Distilling features...")
-    for frame in tqdm(get_frames(colmap_project, percentage_frames=percentage_frames, n_views=n_views)):
+    for frame in tqdm(
+        get_frames(colmap_project, percentage_frames=percentage_frames, n_views=n_views)
+    ):
 
         width = int(K[0, 2] * 2)
         height = int(K[1, 2] * 2)
@@ -127,11 +125,13 @@ def create_feature_field(splats, feature_type="lseg", use_cpu=False, percentage_
         gaussian_features += colors_feats_copy  # / (colors_feats_0.grad[:,0:1]+1e-12)
         gaussian_denoms += colors_feats_0.grad[:, 0]
         colors_feats_0.grad.zero_()
-    print(gaussian_features.shape, gaussian_denoms.shape)
     gaussian_features = gaussian_features / gaussian_denoms[..., None]
     gaussian_features = gaussian_features / gaussian_features.norm(dim=-1, keepdim=True)
     # Replace nan values with 0
-    print("NaN features", torch.isnan(gaussian_features).sum()// gaussian_features.shape[1])
+    print(
+        "Number of NaN features",
+        torch.isnan(gaussian_features).sum() // gaussian_features.shape[1],
+    )
     gaussian_features[torch.isnan(gaussian_features)] = 0
     t2 = time.time()
     print("Time taken for feature distillation", t2 - t1)
@@ -150,8 +150,9 @@ def main(
     run_feature_field_on_cpu: bool = False,  # Run feature field on CPU
     feature: str = "lseg",  # Feature field type
     percentage_frames: int = 100,  # Percentage of frames to process
-    n_views: Union[int, None] = None,  # Number of views to process, None for to use percentage_frames
-
+    n_views: Union[
+        int, None
+    ] = None,  # Number of views to process, None for to use percentage_frames
 ):
 
     if not torch.cuda.is_available():
@@ -169,15 +170,22 @@ def main(
     splats = load_checkpoint(
         checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
     )
+    
     splats_optimized = prune_by_gradients(splats)
     test_proper_pruning(splats, splats_optimized)
     splats = splats_optimized
+    
     if n_views is not None:
         features = create_feature_field(splats, feature_type=feature, n_views=n_views)
         torch.save(features, f"{results_dir}/features_{feature}_{n_views}_views.pt")
     else:
-        features = create_feature_field(splats, feature_type=feature, percentage_frames=percentage_frames)
-        torch.save(features, f"{results_dir}/features_{feature}_{percentage_frames}_percentage.pt")
+        features = create_feature_field(
+            splats, feature_type=feature, percentage_frames=percentage_frames
+        )
+        torch.save(
+            features,
+            f"{results_dir}/features_{feature}_{percentage_frames}_percentage.pt",
+        )
 
 
 if __name__ == "__main__":
