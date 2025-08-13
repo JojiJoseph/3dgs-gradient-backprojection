@@ -359,13 +359,15 @@ def test_proper_pruning(splats, splats_after_pruning):
         )
     )
 
-def get_frames(colmap_project, interval=None, percentage_frames=100):
+def get_frames(colmap_project, interval=None, n_views=None, percentage_frames=100):
     """
     Returns a list of dictionaries containing image names and their corresponding view matrices,
     sorted by image name.
     """
     if interval is None:
         interval = max(len(colmap_project.images) // percentage_frames, 1)
+    if n_views is not None:
+        interval = max(len(colmap_project.images) // n_views, 1)
     images = sorted(colmap_project.images.values(), key=lambda img: img.name)
     frames = []
     for image in images[::interval]:
@@ -374,4 +376,6 @@ def get_frames(colmap_project, interval=None, percentage_frames=100):
             "viewmat": get_viewmat_from_colmap_image(image)
         }
         frames.append(frame)
+    if n_views is not None:
+        frames = frames[:n_views]
     return frames

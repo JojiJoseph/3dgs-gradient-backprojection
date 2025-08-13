@@ -1,7 +1,7 @@
 import math
 import os
 import time
-from typing import Literal
+from typing import Literal, Union
 import torch
 import tyro
 from gsplat import rasterization
@@ -32,7 +32,7 @@ from utils import (
 
 
 
-def create_feature_field(splats, feature_type="lseg", use_cpu=False, percentage_frames=100):
+def create_feature_field(splats, feature_type="lseg", use_cpu=False, percentage_frames=100, n_views=None):
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not use_cpu else "cpu"
     )
@@ -68,7 +68,7 @@ def create_feature_field(splats, feature_type="lseg", use_cpu=False, percentage_
     colors_feats_0.requires_grad = True
 
     print("Distilling features...")
-    for frame in tqdm(get_frames(colmap_project, percentage_frames=percentage_frames)):
+    for frame in tqdm(get_frames(colmap_project, percentage_frames=percentage_frames, n_views=n_views)):
 
         width = int(K[0, 2] * 2)
         height = int(K[1, 2] * 2)
@@ -149,7 +149,8 @@ def main(
     feature_field_batch_count: int = 1,  # Number of batches to process for feature field
     run_feature_field_on_cpu: bool = False,  # Run feature field on CPU
     feature: str = "lseg",  # Feature field type
-    percentage_frames: int = 100  # Percentage of frames to process
+    percentage_frames: int = 100,  # Percentage of frames to process
+    n_views: Union[int, None] = None,  # Number of views to process, None for to use percentage_frames
 
 ):
 
@@ -171,8 +172,12 @@ def main(
     splats_optimized = prune_by_gradients(splats)
     test_proper_pruning(splats, splats_optimized)
     splats = splats_optimized
-    features = create_feature_field(splats, feature_type=feature, percentage_frames=percentage_frames)
-    torch.save(features, f"{results_dir}/features_{feature}_{percentage_frames}.pt")
+    if n_views is not None:
+        features = create_feature_field(splats, feature_type=feature, n_views=n_views)
+        torch.save(features, f"{results_dir}/features_{feature}_{n_views}_views.pt")
+    else:
+        features = create_feature_field(splats, feature_type=feature, percentage_frames=percentage_frames)
+        torch.save(features, f"{results_dir}/features_{feature}_{percentage_frames}_percentage.pt")
 
 
 if __name__ == "__main__":
