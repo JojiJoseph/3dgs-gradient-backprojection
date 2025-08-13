@@ -12,10 +12,10 @@ def register_feature_extractor(name):
     return decorator
 
 def get_feature_extractor(name, device, **kwargs):
-    if name not in FEATURE_EXTRACTORS:
+    if name not in BACKPROJECTION_FEATURE_EXTRACTORS:
         raise ValueError(f"Unknown feature extractor: {name}. "
-                         f"Available: {list(FEATURE_EXTRACTORS.keys())}")
-    return FEATURE_EXTRACTORS[name](device=device, **kwargs)
+                         f"Available: {list(BACKPROJECTION_FEATURE_EXTRACTORS.keys())}")
+    return BACKPROJECTION_FEATURE_EXTRACTORS[name](device=device, **kwargs)
 
 class FeatureExtractor(ABC):
     def extract_features(self, frame):
