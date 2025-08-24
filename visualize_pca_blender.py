@@ -86,13 +86,15 @@ def render_pca_blender(
             if feedback:
                 cv2.imshow("PCA", frame[..., ::-1])
                 cv2.imwrite(f"{aux_dir}/{image_name}", frame[..., ::-1])
-                cv2.waitKey(1)
+                cv2.waitKey(100)
     else:
         for frame in tqdm(splats["transforms"]["frames"]):
             # print("Processing frame:", frame)
             # exit()
             image_name = frame["file_path"].split("/")[-1]
-            viewmat = torch.tensor(frame["transform_matrix"]).float()#$.to(device)
+            viewmat = torch.tensor(frame["transform_matrix"]).float()#.to(device)
+            viewmat[:3, :3] = viewmat[:3, :3] @ torch.tensor(([1, 0, 0], [0, -1, 0], [0, 0, -1])).float()#.to(device)  # Flip Y axis
+            viewmat = torch.linalg.inv(viewmat)
             # viewmat = torch.linalg.inv(viewmat)  # Convert to camera-to-world matrix
             # viewmat[:3, :3] = viewmat[:3, :3] @ torch.tensor(([1, 0, 0], [0, -1, 0], [0, 0, -1])).float()#.to(device)  # Flip Y axis
             K = torch.tensor(splats["camera_matrix"]).float()#.to(device)
@@ -125,7 +127,7 @@ def render_pca_blender(
             if feedback:
                 cv2.imshow("PCA", frame)
                 cv2.imwrite(f"{aux_dir}/{image_name}", frame)
-                cv2.waitKey(1)
+                cv2.waitKey(100)
     # imageio.mimsave(output_path, frames, fps=10, loop=0)
     if feedback:
         cv2.destroyAllWindows()
@@ -140,7 +142,7 @@ def main(
     ] = "gsplat",  # Original or gsplat for checkpoints
     data_factor: int = 4,
     show_visual_feedback: bool = True,
-    feature: Literal["lseg", "dino"] = "lseg",
+    feature: Literal["lseg", "dino", "one-hot"] = "lseg",
 ):
 
     if not torch.cuda.is_available():
@@ -159,23 +161,25 @@ def main(
         features = torch.load(f"{results_dir}/features_lseg.pt")
     elif feature == "dino":
         features = torch.load(f"{results_dir}/features_dino.pt")
+    elif feature == "one-hot":
+        features = torch.load(f"{results_dir}/features_one-hot_100_percentage.pt")
 
     render_pca_blender(
         splats,
         features,
         f"{results_dir}/pca_gaussians_{feature}.gif",
         pca_on_gaussians=True,
-        scale=1.0,
+        scale=0.1,
         feedback=show_visual_feedback,
     )
 
-    # render_pca_blender(
-    #     splats,
-    #     features,
-    #     f"{results_dir}/pca_renderings_{feature}.gif",
-    #     pca_on_gaussians=False,
-    #     feedback=show_visual_feedback,
-    # )
+    render_pca_blender(
+        splats,
+        features,
+        f"{results_dir}/pca_renderings_{feature}.gif",
+        pca_on_gaussians=False,
+        feedback=show_visual_feedback,
+    )
 
 
 if __name__ == "__main__":
