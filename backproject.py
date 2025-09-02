@@ -36,16 +36,14 @@ def create_feature_field(
     means = splats["means"]
     colors_dc = splats["features_dc"]
     colors_rest = splats["features_rest"]
-    colors_all = torch.cat([colors_dc, colors_rest], dim=1)
+    colors = torch.cat([colors_dc, colors_rest], dim=1)
 
-    colors = colors_dc[:, 0, :]  # * 0
     colmap_project = splats["colmap_project"]
 
     opacities = torch.sigmoid(splats["opacity"])
     scales = torch.exp(splats["scaling"])
     quats = splats["rotation"]
     K = splats["camera_matrix"]
-    colors.requires_grad = True
 
     n_gaussians = means.shape[0]
 
@@ -77,7 +75,7 @@ def create_feature_field(
                 quats,
                 scales,
                 opacities,
-                colors_all,
+                colors,
                 viewmat[None],
                 K[None],
                 width=width,
