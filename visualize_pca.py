@@ -127,6 +127,7 @@ def main(
     data_factor: int = 4,
     show_visual_feedback: bool = True,
     tag: str = None,
+    prune: bool = True
 ):
 
     if not torch.cuda.is_available():
@@ -138,9 +139,10 @@ def main(
     splats = load_checkpoint(
         checkpoint, data_dir, format=format, data_factor=data_factor
     )
-    splats_optimized = prune_by_gradients(splats)
-    test_proper_pruning(splats, splats_optimized)
-    splats = splats_optimized
+    if prune:
+        splats_optimized = prune_by_gradients(splats)
+        test_proper_pruning(splats, splats_optimized)
+        splats = splats_optimized
     # if feature == "lseg":
     #     features = torch.load(f"{results_dir}/features_lseg.pt")
     # elif feature == "dino":

@@ -136,7 +136,10 @@ class FeatureMapFeatureExtractor(FeatureExtractor):
             raise ValueError(f"No .npy files found in {feature_dir}")
 
     def extract_features(self, frame, metadata):
-        file_name = metadata["file_path"].split("/")[-1]
+        if "file_path" in metadata:
+            file_name = metadata["file_path"].split("/")[-1]
+        else:
+            file_name = metadata["image_name"].split("/")[-1]
         stem = os.path.splitext(file_name)[0]
         feats = np.load(os.path.join(self.feature_dir, f"{stem}.npy"))
         feats = torch.from_numpy(feats).float().to(self.device)
@@ -153,7 +156,7 @@ class LangSplatFeatureExtractor(FeatureExtractor):
         self.device = device
         self.feature_dir = feature_dir
         self.level = level
-        npys = [f for f in os.listdir(feature_dir) if f.endswith('.npy')]
+        npys = [f for f in os.listdir(feature_dir) if f.endswith('_f.npy')]
         # Load one to find the dimension
         if npys:
             sample_feats = np.load(os.path.join(feature_dir, npys[0]))
@@ -172,10 +175,12 @@ class LangSplatFeatureExtractor(FeatureExtractor):
         return feature_map
 
     def extract_features(self, frame, metadata):
-        file_name = metadata["file_path"].split("/")[-1]
+        # print(metadata["image_name"])
+        file_name = metadata["image_name"].split("/")[-1]
         stem = os.path.splitext(file_name)[0]
         features_path = os.path.join(self.feature_dir, f"{stem}_f.npy")
         segments_path = os.path.join(self.feature_dir, f"{stem}_s.npy")
         features = np.load(features_path) # (N, D)
-        segments = np.load(segments_path) # (4, H, W)
-        return self._create_feature_map(features, segments, self.level)
+        segments = np.load(segments_path).astype(int) # (4, H, W)
+        feature_map =  self._create_feature_map(features, segments, self.level)
+        return torch.from_numpy(feature_map).float().to(self.device)

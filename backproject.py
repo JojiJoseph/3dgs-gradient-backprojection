@@ -168,7 +168,9 @@ def main(
     feature_dir: str | None = None,  # Directory for precomputed feature maps
     n_views: Union[
         int, None
-    ] = None,  # Number of views to process, None for to use percentage_frames
+    ] = None,  # Number of views to process, None for to use percentage_frames,
+    tag: str = "untagged",
+    prune: bool = True,  # Whether to prune the splats before backprojection
 ):
 
     if not torch.cuda.is_available():
@@ -186,10 +188,11 @@ def main(
     splats = load_checkpoint(
         checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
     )
-    
-    splats_optimized = prune_by_gradients(splats)
-    test_proper_pruning(splats, splats_optimized)
-    splats = splats_optimized
+
+    if prune:
+        splats_optimized = prune_by_gradients(splats)
+        test_proper_pruning(splats, splats_optimized)
+        splats = splats_optimized
 
     splats["data_dir"] = data_dir
 
@@ -198,14 +201,14 @@ def main(
     
     if n_views is not None:
         features = create_feature_field(splats, feature_type=feature, n_views=n_views)
-        torch.save(features, f"{results_dir}/features_{feature}_{n_views}_views.pt")
+        torch.save(features, f"{results_dir}/features_{tag}_{feature}_{n_views}_views.pt")
     else:
         features = create_feature_field(
             splats, feature_type=feature, percentage_frames=percentage_frames
         )
         torch.save(
             features,
-            f"{results_dir}/features_{feature}_{percentage_frames}_percentage.pt",
+            f"{results_dir}/features_{tag}_{feature}_{percentage_frames}_percentage.pt",
         )
 
 
