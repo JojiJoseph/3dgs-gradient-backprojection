@@ -8,14 +8,14 @@ from gsplat import rasterization
 import pycolmap_scene_manager as pycolmap
 import numpy as np
 import matplotlib
+from tqdm import tqdm
+
 from feature_extractors import (
     get_feature_extractor,
     BACKPROJECTION_FEATURE_EXTRACTORS,
 )
 
 matplotlib.use("TkAgg")  # To avoid conflict with cv2
-from tqdm import tqdm
-from lseg import LSegNet
 
 
 from utils import (
@@ -27,7 +27,7 @@ from utils import (
 
 
 def create_feature_field(
-    splats, feature_type="lseg", use_cpu=False, percentage_frames=100, n_views=None
+    splats, feature_type="lseg", use_cpu=False, percentage_frames=100, n_views=None, normalize=True
 ):
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not use_cpu else "cpu"
@@ -39,7 +39,6 @@ def create_feature_field(
     colors_all = torch.cat([colors_dc, colors_rest], dim=1)
 
     colors = colors_dc[:, 0, :]  # * 0
-    colors_0 = colors_dc[:, 0, :] * 0
     colmap_project = splats["colmap_project"]
 
     opacities = torch.sigmoid(splats["opacity"])
@@ -47,21 +46,22 @@ def create_feature_field(
     quats = splats["rotation"]
     K = splats["camera_matrix"]
     colors.requires_grad = True
-    colors_0.requires_grad = True
+
+    n_gaussians = means.shape[0]
 
     gaussian_features = torch.zeros(
-        colors.shape[0], feature_extractor.dim, device=colors.device
+        n_gaussians, feature_extractor.dim, device=colors.device
     )
-    gaussian_denoms = torch.ones(colors.shape[0], device=colors.device) * 1e-12
+    gaussian_denoms = torch.ones(n_gaussians, device=colors.device) * 1e-12
 
     t1 = time.time()
 
-    colors_feats = torch.zeros(
-        colors.shape[0], feature_extractor.dim, device=colors.device
+    dummy_feats = torch.zeros(
+        n_gaussians, feature_extractor.dim, device=colors.device
     )
-    colors_feats.requires_grad = True
-    colors_feats_0 = torch.zeros(colors.shape[0], 3, device=colors.device)
-    colors_feats_0.requires_grad = True
+    dummy_feats.requires_grad = True
+    dummy_feats_denom = torch.zeros(n_gaussians, 3, device=colors.device)
+    dummy_feats_denom.requires_grad = True
 
     print("Distilling features...")
     for frame in tqdm(
@@ -91,42 +91,43 @@ def create_feature_field(
             quats,
             scales,
             opacities,
-            colors_feats,
+            dummy_feats,
             viewmat[None],
             K[None],
             width=width,
             height=height,
         )
 
-        target = (output_for_grad[0] * feats).mean()
+        loss_num = (output_for_grad[0] * feats).mean()
 
-        target.backward()
+        loss_num.backward()
 
-        colors_feats_copy = colors_feats.grad.clone()
+        dummy_feats_copy = dummy_feats.grad.clone()
 
-        colors_feats.grad.zero_()
+        dummy_feats.grad.zero_()
 
         output_for_grad, _, meta = rasterization(
             means,
             quats,
             scales,
             opacities,
-            colors_feats_0,
+            dummy_feats_denom,
             viewmat[None],
             K[None],
             width=width,
             height=height,
         )
 
-        target_0 = (output_for_grad[0]).mean()
+        loss_denom = (output_for_grad[0]).mean()
 
-        target_0.backward()
+        loss_denom.backward()
 
-        gaussian_features += colors_feats_copy  # / (colors_feats_0.grad[:,0:1]+1e-12)
-        gaussian_denoms += colors_feats_0.grad[:, 0]
-        colors_feats_0.grad.zero_()
+        gaussian_features += dummy_feats_copy  # / (dummy_feats_denom.grad[:,0:1]+1e-12)
+        gaussian_denoms += dummy_feats_denom.grad[:, 0]
+        dummy_feats_denom.grad.zero_()
     gaussian_features = gaussian_features / gaussian_denoms[..., None]
-    gaussian_features = gaussian_features / gaussian_features.norm(dim=-1, keepdim=True)
+    if normalize:
+        gaussian_features = gaussian_features / gaussian_features.norm(dim=-1, keepdim=True)
     # Replace nan values with 0
     print(
         "Number of NaN features",
@@ -150,6 +151,7 @@ def main(
     run_feature_field_on_cpu: bool = False,  # Run feature field on CPU
     feature: str = "lseg",  # Feature field type
     percentage_frames: int = 100,  # Percentage of frames to process
+    feature_dir: str | None = None,  # Directory for precomputed feature maps
     n_views: Union[
         int, None
     ] = None,  # Number of views to process, None for to use percentage_frames
@@ -174,6 +176,11 @@ def main(
     splats_optimized = prune_by_gradients(splats)
     test_proper_pruning(splats, splats_optimized)
     splats = splats_optimized
+
+    splats["data_dir"] = data_dir
+
+    if feature in ["feature-map", "lang-splat"]:
+        splats["feature_dir"] = feature_dir
     
     if n_views is not None:
         features = create_feature_field(splats, feature_type=feature, n_views=n_views)
