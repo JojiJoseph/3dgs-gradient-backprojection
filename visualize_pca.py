@@ -119,13 +119,14 @@ def render_pca(
 def main(
     data_dir: str = "./data/garden",  # colmap path
     checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt",  # checkpoint path, can generate from original 3DGS repo
+    feature_checkpoint: str = "./data/garden/features_dino.pt",  # path to features, can generate from original 3DGS repo
     results_dir: str = "./results/garden",  # output path
-    rasterizer: Literal[
+    format: Literal[
         "inria", "gsplat"
     ] = "gsplat",  # Original or gsplat for checkpoints
     data_factor: int = 4,
     show_visual_feedback: bool = True,
-    feature: Literal["lseg", "dino"] = "lseg",
+    tag: str = None,
 ):
 
     if not torch.cuda.is_available():
@@ -135,20 +136,25 @@ def main(
 
     os.makedirs(results_dir, exist_ok=True)
     splats = load_checkpoint(
-        checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
+        checkpoint, data_dir, format=format, data_factor=data_factor
     )
     splats_optimized = prune_by_gradients(splats)
     test_proper_pruning(splats, splats_optimized)
     splats = splats_optimized
-    if feature == "lseg":
-        features = torch.load(f"{results_dir}/features_lseg.pt")
-    elif feature == "dino":
-        features = torch.load(f"{results_dir}/features_dino.pt")
+    # if feature == "lseg":
+    #     features = torch.load(f"{results_dir}/features_lseg.pt")
+    # elif feature == "dino":
+    #     features = torch.load(f"{results_dir}/features_dino.pt")
+    features = torch.load(feature_checkpoint)
+
+    if tag is None:
+        tag = os.path.basename(feature_checkpoint).split(".")[0]
+
 
     render_pca(
         splats,
         features,
-        f"{results_dir}/pca_gaussians_{feature}.gif",
+        f"{results_dir}/pca_gaussians_{tag}.gif",
         pca_on_gaussians=True,
         scale=0.20,
         feedback=show_visual_feedback,
@@ -157,7 +163,7 @@ def main(
     render_pca(
         splats,
         features,
-        f"{results_dir}/pca_renderings_{feature}.gif",
+        f"{results_dir}/pca_renderings_{tag}.gif",
         pca_on_gaussians=False,
         feedback=show_visual_feedback,
     )

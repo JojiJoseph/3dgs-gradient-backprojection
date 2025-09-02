@@ -32,7 +32,18 @@ def create_feature_field(
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not use_cpu else "cpu"
     )
-    feature_extractor = get_feature_extractor(feature_type, device)
+    if feature_type == "one-hot":
+        data_dir = splats["data_dir"]
+        feature_extractor = get_feature_extractor(feature_type, device, data_dir=data_dir)
+    elif feature_type == "feature-map":
+        feature_dir = splats["feature_dir"]
+        feature_extractor = get_feature_extractor(feature_type, device, data_dir=None,feature_dir=feature_dir)
+    elif feature_type == "lang-splat":
+        feature_dir = splats["feature_dir"]
+        data_dir = splats["data_dir"]
+        feature_extractor = get_feature_extractor(feature_type, device, data_dir=data_dir, feature_dir=feature_dir)
+    else:
+        feature_extractor = get_feature_extractor(feature_type, device)
     means = splats["means"]
     colors_dc = splats["features_dc"]
     colors_rest = splats["features_rest"]
@@ -65,10 +76,15 @@ def create_feature_field(
     for frame in tqdm(
         get_frames(colmap_project, percentage_frames=percentage_frames, n_views=n_views)
     ):
+        
+        # Temp fix
+        if frame["image_name"].startswith("test"):
+            continue
 
         width = int(K[0, 2] * 2)
         height = int(K[1, 2] * 2)
         viewmat = frame["viewmat"].to(device)
+        metadata = frame
         with torch.no_grad():
             output, _, meta = rasterization(
                 means,
@@ -82,7 +98,7 @@ def create_feature_field(
                 height=height,
                 sh_degree=3,
             )
-            feats = feature_extractor.extract_features(output[0])
+            feats = feature_extractor.extract_features(output[0], metadata)
 
         output_for_grad, _, meta = rasterization(
             means,

@@ -499,6 +499,9 @@ def get_frames_blender(transforms, interval=None, n_views=None, percentage_frame
     Returns a list of dictionaries containing image names and their corresponding view matrices,
     sorted by image name.
     """
+    if interval is not None and n_views is not None:
+        raise ValueError("Cannot specify both interval and n_views")
+    
     if interval is None:
         interval = max(len(transforms) // percentage_frames, 1)
     if n_views is not None:
@@ -521,8 +524,12 @@ def get_frames(colmap_project, interval=None, n_views=None, percentage_frames=10
     Returns a list of dictionaries containing image names and their corresponding view matrices,
     sorted by image name.
     """
+    if interval is not None and n_views is not None:
+        raise ValueError("Cannot specify both interval and n_views")
+    
+    total_frames = int(percentage_frames / 100.0 * len(colmap_project.images))
     if interval is None:
-        interval = max(len(colmap_project.images) // percentage_frames, 1)
+        interval = max(len(colmap_project.images) // total_frames, 1)
     if n_views is not None:
         interval = max(len(colmap_project.images) // n_views, 1)
     images = sorted(colmap_project.images.values(), key=lambda img: img.name)
@@ -530,7 +537,8 @@ def get_frames(colmap_project, interval=None, n_views=None, percentage_frames=10
     for image in images[::interval]:
         frame = {
             "image_name": image.name,
-            "viewmat": get_viewmat_from_colmap_image(image)
+            "viewmat": get_viewmat_from_colmap_image(image),
+            "colmap_image": image, # For future use
         }
         frames.append(frame)
     if n_views is not None:
