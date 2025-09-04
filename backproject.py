@@ -1,7 +1,9 @@
+from dataclasses import dataclass, is_dataclass
 import math
 import os
+from pathlib import Path
 import time
-from typing import Literal, Union
+from typing import Any, Literal, Union
 import torch
 import tyro
 from gsplat import rasterization
@@ -9,6 +11,9 @@ import pycolmap_scene_manager as pycolmap
 import numpy as np
 import matplotlib
 from tqdm import tqdm
+from enum import Enum
+
+import yaml
 
 from feature_extractors import (
     get_feature_extractor,
@@ -24,6 +29,23 @@ from utils import (
     test_proper_pruning,
     get_frames,
 )
+
+def to_builtin(obj: Any) -> Any:
+    """Recursively convert dataclasses and common non-builtins to YAML-safe types."""
+    if is_dataclass(obj):
+        return {k: to_builtin(getattr(obj, k)) for k in obj.__dataclass_fields__}
+    if isinstance(obj, dict):
+        return {to_builtin(k): to_builtin(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [to_builtin(v) for v in obj]
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, np.generic):  # e.g., np.float32(1.0)
+        return obj.item()
+    return obj
+
 
 
 def create_feature_field(
@@ -41,7 +63,7 @@ def create_feature_field(
     elif feature_type == "lang-splat":
         feature_dir = splats["feature_dir"]
         data_dir = splats["data_dir"]
-        feature_extractor = get_feature_extractor(feature_type, device, data_dir=data_dir, feature_dir=feature_dir)
+        feature_extractor = get_feature_extractor(feature_type, device, data_dir=data_dir, feature_dir=feature_dir, level=splats["level"])
     else:
         feature_extractor = get_feature_extractor(feature_type, device)
     means = splats["means"]
@@ -152,26 +174,44 @@ def create_feature_field(
     print("Time taken for feature distillation", t2 - t1)
     return gaussian_features
 
-
-def main(
-    data_dir: str = "./data/garden",  # colmap path
-    checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt",  # checkpoint path, can generate from original 3DGS repo
-    results_dir: str = "./results/garden",  # output path
+@dataclass
+class Args:
+    data_dir: str = "./data/garden"  # colmap path
+    checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt"  # checkpoint path, can generate from original 3DGS repo
+    results_dir: str = "./results/garden"  # output path
     rasterizer: Literal[
         "inria", "gsplat"
-    ] = "gsplat",  # Original or GSplat for checkpoints
-    data_factor: int = 4,
-    feature_field_batch_count: int = 1,  # Number of batches to process for feature field
-    run_feature_field_on_cpu: bool = False,  # Run feature field on CPU
-    feature: str = "lseg",  # Feature field type
-    percentage_frames: int = 100,  # Percentage of frames to process
-    feature_dir: str | None = None,  # Directory for precomputed feature maps
+    ] = "gsplat"  # Original or GSplat for checkpoints
+    data_factor: int = 4
+    feature_field_batch_count: int = 1  # Number of batches to process for feature field
+    run_feature_field_on_cpu: bool = False  # Run feature field on CPU
+    feature: str = "lseg"  # Feature field type
+    percentage_frames: int = 100  # Percentage of frames to process
+    feature_dir: str | None = None  # Directory for precomputed feature maps
     n_views: Union[
         int, None
-    ] = None,  # Number of views to process, None for to use percentage_frames,
-    tag: str = "untagged",
-    prune: bool = True,  # Whether to prune the splats before backprojection
+    ] = None  # Number of views to process, None for to use percentage_frames,
+    tag: str = "garden"
+    prune: bool = True  # Whether to prune the splats before backprojection,
+    level: int = 0  # Lansplat Level
+
+def main(
+    args: Args
 ):
+    data_dir = args.data_dir
+    checkpoint = args.checkpoint
+    results_dir = args.results_dir
+    rasterizer = args.rasterizer
+    data_factor = args.data_factor
+    feature_field_batch_count = args.feature_field_batch_count
+    run_feature_field_on_cpu = args.run_feature_field_on_cpu
+    feature = args.feature
+    percentage_frames = args.percentage_frames
+    feature_dir = args.feature_dir
+    n_views = args.n_views
+    tag = args.tag
+    prune = args.prune
+    level = args.level
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this demo")
@@ -198,19 +238,33 @@ def main(
 
     if feature in ["feature-map", "lang-splat"]:
         splats["feature_dir"] = feature_dir
+        splats["level"] = level
     
     if n_views is not None:
         features = create_feature_field(splats, feature_type=feature, n_views=n_views)
-        torch.save(features, f"{results_dir}/features_{tag}_{feature}_{n_views}_views.pt")
+        # torch.save(features, f"{results_dir}/features_{tag}_{feature}_{n_views}_views.pt")
     else:
         features = create_feature_field(
             splats, feature_type=feature, percentage_frames=percentage_frames
         )
-        torch.save(
-            features,
-            f"{results_dir}/features_{tag}_{feature}_{percentage_frames}_percentage.pt",
-        )
+    torch.save(
+        features,
+        f"{results_dir}/features_{feature.replace('-','_')}_{tag}.pt",
+    )
 
 
 if __name__ == "__main__":
-    tyro.cli(main)
+    cfg = tyro.cli(Args)
+
+    print("Configuration:")
+    print(cfg)
+    print("\n")
+
+    # Save config
+    os.makedirs(cfg.results_dir, exist_ok=True)
+    cfg_out_path = os.path.join(cfg.results_dir, f"backproject_{cfg.tag}.yaml")
+    with open(cfg_out_path, "w") as f:
+        yaml.dump(to_builtin(cfg), f)
+    
+    # Run Evaluation
+    main(cfg)
