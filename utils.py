@@ -643,3 +643,100 @@ def load_checkpoint_blender(
     splats["camera_matrix"] = camera_matrix
 
     return splats
+
+class FeatureRenderer:
+    """
+    Utility class for rasterizing features and colors with most parameters fixed.
+    This class is designed to facilitate repeated rasterization operations where the majority of 
+    parameters (such as means, quaternions, scales, opacities, colors, view matrices, camera intrinsics, 
+    image dimensions, and features) are set once during initialization and reused for subsequent renders.
+    Note:
+        - The class stores references to the input torch.tensors, not clones. 
+            Be cautious when modifying these tensors temporarily, as changes will affect the internal state 
+            unless you explicitly clone the data before editing.
+    Args:
+        means (torch.Tensor, optional): Means of the splats.
+        quats (torch.Tensor, optional): Quaternions representing orientations.
+        scales (torch.Tensor, optional): Scale factors for splats.
+        opacities (torch.Tensor, optional): Opacity values for splats.
+        colors (torch.Tensor, optional): Color values for splats.
+        viewmats (torch.Tensor, optional): Camera view matrices.
+        Ks (torch.Tensor, optional): Camera intrinsic matrices.
+        width (int, optional): Image width.
+        height (int, optional): Image height.
+        features (torch.Tensor, optional): Feature vectors for splats.
+        sh_degree (int, optional): Spherical harmonics degree for color rendering.
+    Methods:
+        render(...): Rasterizes colors using the stored or provided parameters.
+        render_features(...): Rasterizes features using the stored or provided parameters.
+    """
+    def __init__(self, **kwargs):
+        self.means = kwargs.get("means", None)
+        self.quats = kwargs.get("quats", None)
+        self.scales = kwargs.get("scales", None)
+        self.opacities = kwargs.get("opacities", None)
+        self.colors = kwargs.get("colors", None)
+        self.viewmats = kwargs.get("viewmats", None)
+        self.Ks = kwargs.get("Ks", None)
+        self.width = kwargs.get("width", None)
+        self.height = kwargs.get("height", None)
+        self.features = kwargs.get("features", None)
+        self.sh_degree = kwargs.get("sh_degree", None)
+        print(
+            "[WARNING] FeatureRenderer stores references to input arrays, not clones. "
+            "Be careful when editing any variable temporarily—changes will affect the internal state "
+            "unless you explicitly clone the data before modifying."
+        )
+
+    def render(self, means=None, quats=None, scales=None, opacities=None, colors=None, viewmats=None, Ks=None,width=None,height=None,sh_degree=None, **kwargs):
+        # Implement the rendering logic here
+        means = self.means if means is None else means
+        quats = self.quats if quats is None else quats
+        scales = self.scales if scales is None else scales
+        opacities = self.opacities if opacities is None else opacities
+        colors = self.colors if colors is None else colors
+        viewmats = self.viewmats if viewmats is None else viewmats
+        Ks = self.Ks if Ks is None else Ks
+        width = self.width if width is None else width
+        height = self.height if height is None else height
+        sh_degree = self.sh_degree if sh_degree is None else sh_degree
+        rendered_colors, alphas, meta = rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            colors,
+            viewmats=viewmats,
+            Ks=Ks,
+            width=width,
+            height=height,
+            sh_degree=sh_degree,
+            **kwargs
+        )
+        return rendered_colors, alphas, meta
+    
+    def render_features(self, means=None, quats=None, scales=None, opacities=None, features=None, viewmats=None, Ks=None,width=None,height=None, **kwargs):
+        means = self.means if means is None else means
+        quats = self.quats if quats is None else quats
+        scales = self.scales if scales is None else scales
+        opacities = self.opacities if opacities is None else opacities
+        features = self.features if features is None else features
+        viewmats = self.viewmats if viewmats is None else viewmats
+        Ks = self.Ks if Ks is None else Ks
+        width = self.width if width is None else width
+        height = self.height if height is None else height
+
+        rendered_features, alphas, meta = rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            features,
+            viewmats=viewmats,
+            Ks=Ks,
+            width=width,
+            height=height,
+            **kwargs
+        )
+        return rendered_features, alphas, meta
+    
