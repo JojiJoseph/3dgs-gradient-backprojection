@@ -1,31 +1,32 @@
 # This script is used for evaluating langsplat features
 
-from collections import defaultdict
+import os
+import glob
 import json
 import time
-from typing import Literal, Union
-import glob
-import tyro
-import os
-import torch
-import cv2
-import open_clip
-import yaml
+from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Literal, Union
 
+import cv2
 import numpy as np
+import open_clip
+import torch
+import tyro
+import yaml
+import pprint
 import matplotlib
 
-matplotlib.use("TkAgg") # To avoid conflict with opencv
+matplotlib.use("TkAgg")  # To avoid conflict with opencv
 
 from utils import (
     prune_by_gradients,
     test_proper_pruning,
     get_viewmat_from_colmap_image,
     load_checkpoint,
+    FeatureRenderer,
+    to_builtin,
 )
-from utils import FeatureRenderer, to_builtin
-import pprint
 
 
 class LangSplatHelper:  # Not using CLIP/ClipModel to avoid confusion with clip_model
@@ -103,14 +104,16 @@ class LangSplatHelper:  # Not using CLIP/ClipModel to avoid confusion with clip_
         # Convert feature similarities to class probabilities: [positive, negative] in last dimension
         softmax = torch.softmax(
             inv_temp * torch.stack([sim_to_pos, sim_to_neg], dim=-1), dim=-1
-        ) # (H, W, 4, 2)
+        )  # (H, W, 4, 2)
 
         # Relevancy map represents minimum of probabilities of being positive
         relevancy_map = softmax[..., 0].min(dim=-1).values
         if smooth:
             # Optionally smoothes out the relevancy map
             relevancy_map_np = relevancy_map.detach().cpu().numpy()
-            relevancy_map_np = cv2.blur(relevancy_map_np, (smooth_kernel_size, smooth_kernel_size))
+            relevancy_map_np = cv2.blur(
+                relevancy_map_np, (smooth_kernel_size, smooth_kernel_size)
+            )
             relevancy_map = torch.from_numpy(relevancy_map_np).to(relevancy_map.device)
         max_score = relevancy_map.max()
         return relevancy_map, max_score
@@ -184,11 +187,12 @@ class LocalizationEvaluator:
         print_stats():
             Prints the total correct predictions, total predictions, and accuracy in a formatted manner.
     """
+
     def __init__(self):
         # counter is a nested dictionary structured as:
         # {
         #     file: {
-        #         object: is_localized
+        #         object_: is_localized
         #     }
         # }
         # Note: in a file multiple instances of same object can exist
@@ -267,6 +271,7 @@ class IoUEvaluator:
         print_stats(recalc=True):
             Prints the current mIoU score. Optionally recalculates before printing.
     """
+
     def __init__(self):
         # gt_masks and masks are nested dictionaries structured as:
         # {
@@ -282,11 +287,7 @@ class IoUEvaluator:
         self.mIoU = 0.0
 
     def update(
-        self,
-        frame: str,
-        object_: str,
-        pred_mask: np.ndarray,
-        gt_mask: np.ndarray
+        self, frame: str, object_: str, pred_mask: np.ndarray, gt_mask: np.ndarray
     ) -> None:
         """
         Updates the evaluator with predicted and ground truth masks for a specific frame and object.
@@ -529,10 +530,10 @@ def main(args: Args):
             )
             feature_maps.append(features_rendered)
 
-        for object in annotations["objects"]:
-            category = object["category"]
+        for object_ in annotations["objects"]:
+            category = object_["category"]
             segmentation = (
-                np.array(object["segmentation"]).reshape(-1, 2).astype(np.int32)
+                np.array(object_["segmentation"]).reshape(-1, 2).astype(np.int32)
             )
             gt_mask = np.zeros((int(height), int(width)), dtype=np.uint8)
             cv2.fillPoly(gt_mask, [segmentation], 255)
@@ -547,7 +548,7 @@ def main(args: Args):
 
             iou_evaluator.update(stem, category, mask, gt_mask)
 
-            inside_flag = is_inside_bbox(location, object["bbox"])
+            inside_flag = is_inside_bbox(location, object_["bbox"])
 
             loc_evaluator.update(json_path, category, inside_flag)
 
@@ -557,7 +558,6 @@ def main(args: Args):
     acc, _, _ = loc_evaluator.get_stats()
     mIoU = iou_evaluator.calc()
 
-    
     # Save the results
     results_path = os.path.join(
         args.results_dir, f"langsplat_evaluation_{args.tag}.json"
@@ -565,7 +565,6 @@ def main(args: Args):
     os.makedirs(args.results_dir, exist_ok=True)
     with open(results_path, "w") as f:
         json.dump({"accuracy": acc, "mIoU": mIoU}, f)
-
 
 
 if __name__ == "__main__":
