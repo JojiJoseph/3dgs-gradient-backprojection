@@ -1,76 +1,65 @@
 from collections import defaultdict
-from copy import deepcopy
 import json
-from pathlib import Path
 import time
-from typing import Any, Literal
+from typing import Literal
 import glob
-from enum import Enum
 import tyro
 import os
 import torch
 import cv2
-import imageio  # To generate gifs
-import pycolmap_scene_manager as pycolmap
-from gsplat import rasterization
+
 import numpy as np
-import clip
 import matplotlib
 from sklearn.decomposition import PCA
 import open_clip
 import yaml
+from dataclasses import dataclass, field
 from utils import FeatureRenderer, to_builtin
 
 
-clip_model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
-    "ViT-B-16", pretrained="laion2b_s34b_b88k"
-)
-clip_model.to("cuda")
-prompt = "three coockies"
-prompt_tokenized = open_clip.tokenize([prompt]).to("cuda")
-prompt_embedding = clip_model.encode_text(prompt_tokenized).float()
+class LangSplatHelper:  # Not using CLIP/ClipModel to avoid confusion with clip_model
+    def __init__(self):
+        self.clip_model, self.preprocess_train, self.preprocess_val = (
+            open_clip.create_model_and_transforms(
+                "ViT-B-16", pretrained="laion2b_s34b_b88k"
+            )
+        )
+        self.clip_model.to("cuda")
+        neg_prompts = ["object", "things", "stuff", "texture"]
+        neg_prompt_tokenized = open_clip.tokenize(neg_prompts).to("cuda")
+        self.neg_prompt_embedding = self.clip_model.encode_text(
+            neg_prompt_tokenized
+        ).float()
+        self.neg_prompt_embedding = torch.nn.functional.normalize(
+            self.neg_prompt_embedding, dim=-1, eps=1e-5
+        )
 
-neg_prompts = ["object", "things", "stuff", "texture"]
-neg_prompt_tokenized = open_clip.tokenize(neg_prompts).to("cuda")
-neg_prompt_embedding = clip_model.encode_text(neg_prompt_tokenized).float()
+    def encode_text(self, text, normalize=False):
+        embedding = self.clip_model.encode_text(
+            open_clip.tokenize([text]).to("cuda")
+        ).float()
+        if normalize:
+            embedding = torch.nn.functional.normalize(embedding, dim=-1, eps=1e-5)
+        return embedding
 
-pos_prompt = prompt_embedding.repeat(len(neg_prompts), 1)
-
-# Normalize prompts
-# pos_prompt_embedding = pos_prompt / pos_prompt.norm(dim=-1, keepdim=True)
-# neg_prompt_embedding = neg_prompt_embedding / neg_prompt_embedding.norm(dim=-1, keepdim=True)
-pos_prompt = torch.nn.functional.normalize(pos_prompt, dim=-1, eps=1e-5)
-neg_prompt_embedding = torch.nn.functional.normalize(
-    neg_prompt_embedding, dim=-1, eps=1e-5
-)
-# print(pos_prompt_embedding.shape, neg_prompt_embedding.shape)
-# exit()
-# Both has shape (4,512), Stack them like (4,2,512) and take softmax over dim 1
-stacked = torch.stack([pos_prompt, neg_prompt_embedding], dim=1)
-
-
-# sims = torch.softmax(10*stacked, dim=1)
-# score_ = sims[:,0]
-# print(stacked.shape, sims.shape)
-# exit()
-def get_mask(feats, pos_prompt=pos_prompt, inv_temp=10, thresh=0.5, smooth=True):
-    # print(pos_prompt.shape, neg_prompt_embedding.shape)
-    # exit()
-    if pos_prompt.shape[0] == 1:
-        pos_prompt = pos_prompt.repeat(len(neg_prompt_embedding), 1)
-    sim_to_neg = feats @ neg_prompt_embedding.T  # (H, W, 4)
-    sim_to_pos = feats @ pos_prompt.T  # (H, W, 4)
-    softmax = torch.softmax(
-        inv_temp * torch.stack([sim_to_pos, sim_to_neg], dim=-1), dim=-1
-    )
-    score = softmax[..., 0].min(dim=-1).values
-    if smooth:
-        score_np = score.detach().cpu().numpy()
-        score_np = cv2.blur(score_np, (20, 20))
-        score = torch.from_numpy(score_np).to(score.device)
-    max_score = score.max()
-    mask = score
-    return mask, max_score
+    def get_relevancy_map(self, feats, prompt_embedding=None, inv_temp=10, smooth=True):
+        if prompt_embedding.shape[0] == 1:
+            prompt_embedding = prompt_embedding.repeat(
+                len(self.neg_prompt_embedding), 1
+            )
+        sim_to_neg = feats @ self.neg_prompt_embedding.T  # (H, W, 4)
+        sim_to_pos = feats @ prompt_embedding.T  # (H, W, 4)
+        softmax = torch.softmax(
+            inv_temp * torch.stack([sim_to_pos, sim_to_neg], dim=-1), dim=-1
+        )
+        score = softmax[..., 0].min(dim=-1).values
+        if smooth:
+            score_np = score.detach().cpu().numpy()
+            score_np = cv2.blur(score_np, (20, 20))
+            score = torch.from_numpy(score_np).to(score.device)
+        max_score = score.max()
+        mask = score
+        return mask, max_score
 
 
 class LocalizationEvaluator:
@@ -135,14 +124,10 @@ class IoUEvaluator:
         print(f"mIoU\t:\t{self.mIoU * 100:.2f}%")
 
 
-def get_location_and_mask(feature_maps, prompt):
+def get_location_and_mask(feature_maps, prompt, lang_splat_helper: LangSplatHelper):
 
     masks = []
-    prompt_embedding = clip_model.encode_text(
-        open_clip.tokenize([prompt]).to("cuda")
-    ).float()
-    # Normalize prompt_embedding
-    prompt_embedding = torch.nn.functional.normalize(prompt_embedding, dim=-1, eps=1e-5)
+    prompt_embedding = lang_splat_helper.encode_text(prompt, normalize=True).float()
     final_mask = torch.zeros(
         (feature_maps[0].shape[0], feature_maps[0].shape[1])
     ).cuda()
@@ -150,15 +135,13 @@ def get_location_and_mask(feature_maps, prompt):
     relavancy_scores = []
 
     for features in feature_maps:
-        # Feature is of shape (H,W,512), apply kernel on it
-
-        # assert features_smoothed.shape == features.shape, (features_smoothed.shape, features.shape)
-        mask, max_score = get_mask(features, pos_prompt=prompt_embedding)
+        mask, max_score = lang_splat_helper.get_relevancy_map(
+            features, prompt_embedding=prompt_embedding
+        )
         masks.append(mask)
         relavancy_scores.append(max_score.item())
         final_mask = torch.maximum(final_mask, mask)
 
-    # final_mask = torch.maximum(*masks).detach().cpu().numpy()
     final_mask = final_mask.detach().cpu().numpy()
 
     # Get x, y coordinate of maximum value
@@ -178,105 +161,6 @@ from utils import (
     load_checkpoint,
     torch_to_cv,
 )
-
-
-def render_pca(
-    splats,
-    features,
-    output_path,
-    pca_on_gaussians=True,
-    scale=1.0,
-    feedback=True,
-):
-    if feedback:
-        cv2.destroyAllWindows()
-        cv2.namedWindow("PCA", cv2.WINDOW_NORMAL)
-    frames = []
-    means = splats["means"]
-    colors_dc = splats["features_dc"]
-    colors_rest = splats["features_rest"]
-    colors = torch.cat([colors_dc, colors_rest], dim=1)
-    opacities = torch.sigmoid(splats["opacity"])
-    scales = torch.exp(splats["scaling"])
-    quats = splats["rotation"]
-    K = splats["camera_matrix"]
-    if output_path is not None:
-        aux_dir = output_path + ".images"
-        os.makedirs(aux_dir, exist_ok=True)
-
-    pca = PCA(n_components=3)
-    features_pca = pca.fit_transform(features.detach().cpu().numpy())
-    feats_min = np.min(features_pca, axis=(0, 1))
-    feats_max = np.max(features_pca, axis=(0, 1))
-    features_pca = (features_pca - feats_min) / (feats_max - feats_min)
-    features_pca = torch.tensor(features_pca).float().cuda()
-    if pca_on_gaussians:
-        for image in sorted(
-            splats["colmap_project"].images.values(), key=lambda x: x.name
-        ):
-            viewmat = get_viewmat_from_colmap_image(image)
-            features_rendered, alphas, meta = rasterization(
-                means,
-                quats,
-                scales * scale,
-                opacities,
-                features_pca,
-                viewmats=viewmat[None],
-                Ks=K[None],
-                width=K[0, 2] * 2,
-                height=K[1, 2] * 2,
-                # sh_degree=3,
-            )
-            features_rendered = features_rendered[0]
-            frame = torch_to_cv(features_rendered)
-            frame = np.clip(frame, 0, 255).astype(np.uint8)
-            frames.append(frame)
-            if feedback:
-                cv2.imshow("PCA", frame[..., ::-1])
-                if output_path is not None:
-                    cv2.imwrite(f"{aux_dir}/{image.name}", frame[..., ::-1])
-                cv2.waitKey(1)
-    else:
-        for image in sorted(
-            splats["colmap_project"].images.values(), key=lambda x: x.name
-        ):
-            viewmat = get_viewmat_from_colmap_image(image)
-            features_rendered, alphas, meta = rasterization(
-                means,
-                quats,
-                scales * scale,
-                opacities,
-                features,
-                viewmats=viewmat[None],
-                Ks=K[None],
-                width=K[0, 2] * 2,
-                height=K[1, 2] * 2,
-                # sh_degree=3,
-            )
-            features_rendered = features_rendered[0]
-            h, w, c = features_rendered.shape
-            features_rendered = (
-                features_rendered.reshape(h * w, c).detach().cpu().numpy()
-            )
-            features_rendered = pca.transform(features_rendered)
-            features_rendered = features_rendered.reshape(h, w, 3)
-            features_rendered = (features_rendered - feats_min) / (
-                feats_max - feats_min
-            )
-            frame = (features_rendered * 255).astype(np.uint8)
-            frames.append(frame[..., ::-1])
-            if feedback:
-                cv2.imshow("PCA", frame)
-                if output_path is not None:
-                    cv2.imwrite(f"{aux_dir}/{image.name}", frame)
-                cv2.waitKey(1)
-    if output_path is not None:
-        imageio.mimsave(output_path, frames, fps=10, loop=0)
-    if feedback:
-        cv2.destroyAllWindows()
-
-
-from dataclasses import dataclass, field, is_dataclass
 
 
 @dataclass
@@ -348,31 +232,33 @@ def main(args: Args):
     loc_evaluator = LocalizationEvaluator()
     iou_evaluator = IoUEvaluator()
 
-    if False:
-        render_pca(
-            splats,
-            features_1,
-            None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
-            pca_on_gaussians=True,
-            scale=1.0,
-            feedback=show_visual_feedback,
-        )
-        render_pca(
-            splats,
-            features_2,
-            None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
-            pca_on_gaussians=True,
-            scale=1.0,
-            feedback=show_visual_feedback,
-        )
-        render_pca(
-            splats,
-            features_3,
-            None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
-            pca_on_gaussians=True,
-            scale=1.0,
-            feedback=show_visual_feedback,
-        )
+    # if False:
+    #     render_pca(
+    #         splats,
+    #         features_1,
+    #         None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
+    #         pca_on_gaussians=True,
+    #         scale=1.0,
+    #         feedback=show_visual_feedback,
+    #     )
+    #     render_pca(
+    #         splats,
+    #         features_2,
+    #         None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
+    #         pca_on_gaussians=True,
+    #         scale=1.0,
+    #         feedback=show_visual_feedback,
+    #     )
+    #     render_pca(
+    #         splats,
+    #         features_3,
+    #         None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
+    #         pca_on_gaussians=True,
+    #         scale=1.0,
+    #         feedback=show_visual_feedback,
+    #     )
+
+    lang_splat_helper = LangSplatHelper()
 
     means = splats["means"]
     colors_dc = splats["features_dc"]
@@ -435,7 +321,7 @@ def main(args: Args):
             cv2.fillPoly(gt_mask, [segmentation], 255)
 
             location, mask_combined, mask_max_relevancy = get_location_and_mask(
-                feature_maps, prompt=category
+                feature_maps, prompt=category, lang_splat_helper=lang_splat_helper
             )
 
             mask_thresh = mask_max_relevancy - mask_max_relevancy.min()
