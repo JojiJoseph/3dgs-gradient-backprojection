@@ -22,9 +22,6 @@ import yaml
 from utils import FeatureRenderer, to_builtin
 
 
-
-
-
 clip_model, preprocess_train, preprocess_val = open_clip.create_model_and_transforms(
     "ViT-B-16", pretrained="laion2b_s34b_b88k"
 )
@@ -76,7 +73,7 @@ def get_mask(feats, pos_prompt=pos_prompt, inv_temp=10, thresh=0.5, smooth=True)
     return mask, max_score
 
 
-class LocalizationCounter:
+class LocalizationEvaluator:
     def __init__(self):
         self.counter = defaultdict(lambda: defaultdict(bool))
 
@@ -100,7 +97,7 @@ class LocalizationCounter:
         print(f"Accuracy\t:\t{acc * 100:.2f}%")
 
 
-class IoUCalculator:
+class IoUEvaluator:
     def __init__(self):
         self.gt_masks = defaultdict(lambda: defaultdict(lambda: None))
         self.masks = defaultdict(lambda: defaultdict(lambda: None))
@@ -149,7 +146,6 @@ def get_location_and_mask(feature_maps, prompt):
     final_mask = torch.zeros(
         (feature_maps[0].shape[0], feature_maps[0].shape[1])
     ).cuda()
-
 
     relavancy_scores = []
 
@@ -290,9 +286,13 @@ class Args:
         "./data/lerf_ovs/teatime/ckpts/ckpt_29999_rank0.pt"  # Path to the checkpoint file, can be generated from the original 3DGS repo.
     )
     results_dir: str = "./results/lerf_ovs/teatime"  # Output directory for results.
-    format: Literal["inria", "gsplat"] = "gsplat"  # Checkpoint format: "inria" (original) or "gsplat".
+    format: Literal["inria", "gsplat"] = (
+        "gsplat"  # Checkpoint format: "inria" (original) or "gsplat".
+    )
     data_factor: int = 1  # Downscale resolution by this factor.
-    show_visual_feedback: bool = True  # Whether to show visual feedback during evaluation.
+    show_visual_feedback: bool = (
+        True  # Whether to show visual feedback during evaluation.
+    )
     tag: str = None  # Optional tag for this evaluation run.
     prune: bool = True  # Whether to prune the 3DGS using gradients.
     feature_paths: list[str] = field(
@@ -302,19 +302,19 @@ class Args:
             "./teatime_feats/teatime_level_3.pt",
         ]
     )  # Paths to the feature files for each level.
-    label_dir: str = "./data/lerf_ovs/label/teatime"  # Directory containing evaluation label files.
+    label_dir: str = (
+        "./data/lerf_ovs/label/teatime"  # Directory containing evaluation label files.
+    )
+
 
 def get_stem(file_name):
     return os.path.splitext(file_name)[0]
 
+
 def is_inside_bbox(location, bbox):
     x, y = location
-    return (
-        (x >= bbox[0])
-        and (x <= bbox[2])
-        and (y >= bbox[1])
-        and (y <= bbox[3])
-    )
+    return (x >= bbox[0]) and (x <= bbox[2]) and (y >= bbox[1]) and (y <= bbox[3])
+
 
 def main(args: Args):
 
@@ -345,12 +345,8 @@ def main(args: Args):
     json_file_stems = [os.path.splitext(os.path.basename(f))[0] for f in json_files]
     json_file_stems.sort()
 
-    iou_sum = 0
-    iou_count = 0
-
-    loc_counter = LocalizationCounter()
-    iou_calculator = IoUCalculator()
-
+    loc_evaluator = LocalizationEvaluator()
+    iou_evaluator = IoUEvaluator()
 
     if False:
         render_pca(
@@ -389,8 +385,6 @@ def main(args: Args):
     width = K[0, 2] * 2
     height = K[1, 2] * 2
 
-    
-        
     renderer = FeatureRenderer(
         means=means,
         quats=quats,
@@ -403,9 +397,10 @@ def main(args: Args):
         height=None,
     )
 
-
-
-    colmap_val_images = filter(lambda x: get_stem(x.name) in json_file_stems, splats["colmap_project"].images.values())
+    colmap_val_images = filter(
+        lambda x: get_stem(x.name) in json_file_stems,
+        splats["colmap_project"].images.values(),
+    )
 
     # Localization
     for image in sorted(colmap_val_images, key=lambda x: x.name):
@@ -418,7 +413,7 @@ def main(args: Args):
         feature_maps = []
         for features in [features_1, features_2, features_3]:
 
-            features_rendered, _ , _ = renderer.render_features(
+            features_rendered, _, _ = renderer.render_features(
                 features=features,
                 viewmats=viewmat[None],
                 Ks=K[None],
@@ -426,18 +421,19 @@ def main(args: Args):
                 height=height,
             )
             features_rendered = features_rendered[0]
-            features_rendered = torch.nn.functional.normalize(features_rendered, dim=-1, p=2)
+            features_rendered = torch.nn.functional.normalize(
+                features_rendered, dim=-1, p=2
+            )
             feature_maps.append(features_rendered)
 
         for object in annotations["objects"]:
             category = object["category"]
-            segmentation = np.array(object["segmentation"]).reshape(-1, 2).astype(np.int32)
+            segmentation = (
+                np.array(object["segmentation"]).reshape(-1, 2).astype(np.int32)
+            )
             gt_mask = np.zeros((int(height), int(width)), dtype=np.uint8)
             cv2.fillPoly(gt_mask, [segmentation], 255)
-            # cv2.imshow("GT Mask", gt_mask)
-            # print(object.keys())
-            # exit()
-            
+
             location, mask_combined, mask_max_relevancy = get_location_and_mask(
                 feature_maps, prompt=category
             )
@@ -445,132 +441,25 @@ def main(args: Args):
             mask_thresh = mask_max_relevancy - mask_max_relevancy.min()
             mask_thresh = mask_thresh / (mask_thresh.max() + 1e-5)
 
-            mask = mask_thresh*2 - 1 > 0.4
+            mask = mask_thresh * 2 - 1 > 0.4
             mask = mask.astype(np.uint8) * 255
 
-            iou_calculator.update(stem, category, mask, gt_mask)
-
-            # cv2.imshow("Mask max relevancy", mask_max_relevancy)
-            # cv2.imshow("Mask thresh", mask_thresh)
-            # cv2.imshow("Mask", mask)
-            # cv2.waitKey(1)
+            iou_evaluator.update(stem, category, mask, gt_mask)
 
             inside_flag = is_inside_bbox(location, object["bbox"])
 
+            loc_evaluator.update(json_path, category, inside_flag)
 
-            loc_counter.update(json_path, category, inside_flag)
-
-        if False:
-            colors_rendered, _, _ = renderer.render(
-                viewmats=viewmat[None],
-                Ks=K[None],
-                width=K[0, 2] * 2,
-                height=K[1, 2] * 2,
-                sh_degree=3,
-            )
-            
-            colors_rendered = colors_rendered[0].detach().cpu().numpy()
-            # For future reference - dict_keys(['category', 'group', 'segmentation', 'area', 'layer', 'bbox', 'iscrowd', 'note'])
-
-            for object in annotations["objects"]:
-                category = object["category"]
-
-                seg_polygon = (
-                    np.array(object["segmentation"]).reshape(-1, 2).astype(np.int32)
-                )
-                bbox_float = [float(x) for x in object["bbox"]]
-                bbox_int = [int(x) for x in object["bbox"]]
-                x1, y1, x2, y2 = bbox_int[0], bbox_int[1], bbox_int[2], bbox_int[3]
-                location, mask_combined, mask_max_relevancy = get_location_and_mask(
-                    feature_maps, prompt=object["category"]
-                )
-                x, y = location
-                # Check if x, y inside the bounding box
-                is_inside = (
-                    (x >= bbox_float[0])
-                    and (x <= bbox_float[2])
-                    and (y >= bbox_float[1])
-                    and (y <= bbox_float[3])
-                )
-                # counter[category] = is_inside
-                output = colors_rendered.copy()
-                cv2.putText(
-                    output,
-                    f"Prompt: {object['category']}",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1,
-                    (0, 255, 0),
-                    2,
-                )
-                cv2.circle(output, location, 5, (0, 0, 255), -1)
-                cv2.rectangle(output, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.polylines(
-                    output, [seg_polygon], isClosed=True, color=(0, 255, 255), thickness=2
-                )
-                if is_inside:
-
-                    cv2.putText(
-                        output,
-                        f"Inside BBox",
-                        (10, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1,
-                        (0, 255, 0),
-                        2,
-                    )
-
-                loc_counter.update(json_path, category, is_inside)
-
-                mask_gt = np.zeros((int(K[1, 2] * 2), int(K[0, 2] * 2)), dtype=np.uint8)
-                cv2.fillPoly(mask_gt, [seg_polygon], (255, 255, 255))
-                cv2.imshow("Ground Truth Mask", mask_gt)
-                print(
-                    "mask_max_relevancy",
-                    mask_max_relevancy.shape,
-                    mask_max_relevancy.min(),
-                    mask_max_relevancy.max(),
-                    mask_max_relevancy.mean(),
-                )
-
-                cv2.imshow("Combined Mask", np.clip(mask_combined, 0, 1))
-                # mask_max_relevancy = mask_combined
-                mask_max_relevancy = mask_max_relevancy - mask_max_relevancy.min()
-                mask_max_relevancy = mask_max_relevancy / (mask_max_relevancy.max() + 1e-5)
-                mask_max_relevancy = mask_max_relevancy > 0.5
-                mask_max_relevancy_uint8 = mask_max_relevancy.astype(np.uint8) * 255
-                intersection = np.logical_and(mask_max_relevancy_uint8, mask_gt).sum()
-                union = np.logical_or(mask_max_relevancy_uint8, mask_gt).sum()
-                iou = intersection / (union + 1e-5)
-                print("IoU", iou)
-                iou_sum += iou
-                iou_count += 1
-
-                cv2.imshow("Max Relevancy Mask", mask_max_relevancy * 1.0)
-                output = 0.5 * output + 0.5 * mask_max_relevancy[..., None] * np.array(
-                    [1.0, 0.0, 0.0]
-                )
-                cv2.imshow("Output", np.clip(output, 0, 1)[..., ::-1])
-                key = cv2.waitKey(1)
-                if key in [29, ord("q")]:
-                    exit()
-
-
-
-    loc_counter.print_stats()
-    iou_calculator.print_stats()
+    loc_evaluator.print_stats()
+    iou_evaluator.print_stats()
     results_path = os.path.join(cfg.results_dir, f"langsplat_evaluation_{cfg.tag}.json")
-    _, _, acc = loc_counter.get_stats()
+    _, _, acc = loc_evaluator.get_stats()
 
-
-    mIoU = iou_calculator.calc()
-
-
+    mIoU = iou_evaluator.calc()
 
     os.makedirs(cfg.results_dir, exist_ok=True)
     json.dump({"accuracy": acc, "mIoU": mIoU}, open(results_path, "w"))
     print("mIoU", mIoU * 100)
-
 
 
 if __name__ == "__main__":
@@ -586,6 +475,6 @@ if __name__ == "__main__":
     cfg_out_path = os.path.join(cfg.results_dir, f"langsplat_evaluation_{cfg.tag}.yaml")
     with open(cfg_out_path, "w") as f:
         yaml.dump(to_builtin(cfg), f)
-    
+
     # Run Evaluation
     main(cfg)
