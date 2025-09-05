@@ -1,6 +1,9 @@
+from dataclasses import is_dataclass
+from enum import Enum
+from pathlib import Path
 import torch
 import pycolmap_scene_manager as pycolmap
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 import numpy as np
 from gsplat import rasterization
 import warnings
@@ -740,3 +743,18 @@ class FeatureRenderer:
         )
         return rendered_features, alphas, meta
     
+def to_builtin(obj: Any) -> Any:
+    """Recursively convert dataclasses and common non-builtins to YAML-safe types."""
+    if is_dataclass(obj):
+        return {k: to_builtin(getattr(obj, k)) for k in obj.__dataclass_fields__}
+    if isinstance(obj, dict):
+        return {to_builtin(k): to_builtin(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [to_builtin(v) for v in obj]
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, np.generic):  # e.g., np.float32(1.0)
+        return obj.item()
+    return obj
