@@ -1,50 +1,37 @@
-from dataclasses import dataclass, is_dataclass
 import math
 import os
-from pathlib import Path
 import time
+from dataclasses import dataclass, is_dataclass
+from enum import Enum
+from pathlib import Path
 from typing import Any, Literal, Union
+
+import matplotlib
+import numpy as np
 import torch
 import tyro
+import yaml
+import pprint
+from tqdm import tqdm
+import json
+
 from gsplat import rasterization
 import pycolmap_scene_manager as pycolmap
-import numpy as np
-import matplotlib
-from tqdm import tqdm
-from enum import Enum
-
-import yaml
-
-from feature_extractors import (
-    get_feature_extractor,
-    BACKPROJECTION_FEATURE_EXTRACTORS,
-)
 
 matplotlib.use("TkAgg")  # To avoid conflict with cv2
-
 
 from utils import (
     load_checkpoint,
     prune_by_gradients,
     test_proper_pruning,
     get_frames,
+    to_builtin
 )
 
-def to_builtin(obj: Any) -> Any:
-    """Recursively convert dataclasses and common non-builtins to YAML-safe types."""
-    if is_dataclass(obj):
-        return {k: to_builtin(getattr(obj, k)) for k in obj.__dataclass_fields__}
-    if isinstance(obj, dict):
-        return {to_builtin(k): to_builtin(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [to_builtin(v) for v in obj]
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, Enum):
-        return obj.value
-    if isinstance(obj, np.generic):  # e.g., np.float32(1.0)
-        return obj.item()
-    return obj
+from feature_extractors import (
+    get_feature_extractor,
+    BACKPROJECTION_FEATURE_EXTRACTORS,
+)
 
 
 
@@ -193,7 +180,7 @@ class Args:
     ] = None  # Number of views to process, None for to use percentage_frames,
     tag: str = "garden"
     prune: bool = True  # Whether to prune the splats before backprojection,
-    level: int = 0  # Lansplat Level
+    level: int = 0  # LangSplat Level
 
 def main(
     args: Args
@@ -240,6 +227,7 @@ def main(
         splats["feature_dir"] = feature_dir
         splats["level"] = level
     
+    t1 = time.time()
     if n_views is not None:
         features = create_feature_field(splats, feature_type=feature, n_views=n_views)
         # torch.save(features, f"{results_dir}/features_{tag}_{feature}_{n_views}_views.pt")
@@ -247,17 +235,23 @@ def main(
         features = create_feature_field(
             splats, feature_type=feature, percentage_frames=percentage_frames
         )
+    t2 = time.time()
     torch.save(
         features,
         f"{results_dir}/features_{feature.replace('-','_')}_{tag}.pt",
     )
+
+    with open(f"{results_dir}/backproject_{feature.replace('-','_')}_{tag}.json", "w") as f:
+        json.dump({
+            "time_taken": t2 - t1
+        }, f)
 
 
 if __name__ == "__main__":
     cfg = tyro.cli(Args)
 
     print("Configuration:")
-    print(cfg)
+    pprint.pprint(to_builtin(cfg))
     print("\n")
 
     # Save config
