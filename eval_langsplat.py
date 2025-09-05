@@ -16,14 +16,13 @@ from dataclasses import dataclass, field
 import numpy as np
 import matplotlib
 
-matplotlib.use("TkAgg")
+matplotlib.use("TkAgg") # To avoid conflict with opencv
 
 from utils import (
     prune_by_gradients,
     test_proper_pruning,
     get_viewmat_from_colmap_image,
     load_checkpoint,
-    torch_to_cv,
 )
 from utils import FeatureRenderer, to_builtin
 import pprint
@@ -169,25 +168,83 @@ class LangSplatHelper:  # Not using CLIP/ClipModel to avoid confusion with clip_
 
 
 class LocalizationEvaluator:
+    """
+    A class to evaluate localization accuracy by tracking correctness of object predictions per file.
+
+    Attributes:
+        counter (defaultdict): Nested dictionary mapping file names to objects and their correctness.
+
+    Methods:
+        update(file, object_, is_correct):
+            Updates the correctness status for a given object in a file.
+
+        get_stats():
+            Computes and returns the total number of correct predictions, total predictions, and accuracy.
+
+        print_stats():
+            Prints the total correct predictions, total predictions, and accuracy in a formatted manner.
+    """
     def __init__(self):
+        # counter is a nested dictionary structured as:
+        # {
+        #     file: {
+        #         object: is_localized
+        #     }
+        # }
+        # Note: in a file multiple instances of same object can exist
+        # But prompting with LangSplat features can localize only one object.
+        # Therefore if we locate any instance of that object we consider it as localized.
         self.counter = defaultdict(lambda: defaultdict(bool))
 
-    def update(self, file, object, is_correct):
-        self.counter[file][object] |= is_correct
+    def update(self, file: str, object_: str, is_localized: bool):
+        """
+        Updates the localization status of an object within a file.
+
+        If at least one instance of the object is localized in the file, the corresponding entry in the counter is marked as localized.
+
+        Args:
+            file (str): The name or path of the file being evaluated.
+            object_ (str): The identifier of the object within the file.
+            is_localized (bool): Whether the object is localized in this instance.
+
+        """
+        # The counter[file][object_] is marked localized if at least one instance of the object is localized in the file.
+        self.counter[file][object_] |= is_localized
 
     def get_stats(self):
+        """
+        Calculates and returns statistics based on the internal counter.
+
+        Returns:
+            tuple: A tuple containing:
+                - acc (float): The accuracy, defined as total_localized divided by total_count (0 if total_count is 0).
+                - total_localized (int): The total count of localized objects across all files.
+                - total_count (int): The total number of objects across all files.
+        """
         total_count = sum(len(self.counter[file]) for file in self.counter)
-        total_correct = sum(
-            self.counter[file][object]
+        total_localized = sum(
+            self.counter[file][object_]
             for file in self.counter
-            for object in self.counter[file]
+            for object_ in self.counter[file]
         )
-        acc = total_correct / total_count if total_count > 0 else 0
-        return total_correct, total_count, acc
+        acc = total_localized / total_count if total_count > 0 else 0
+        return acc, total_localized, total_count
 
     def print_stats(self):
-        total_correct, total_count, acc = self.get_stats()
-        print(f"Total Correct\t:\t{total_correct}")
+        """
+        Prints statistics about localization performance.
+
+        Retrieves accuracy, total localized items, and total count using `get_stats()`,
+        then prints these values in a formatted manner:
+            - Total Localized: Number of items successfully localized.
+            - Total Count: Total number of items evaluated.
+            - Accuracy: Percentage of items correctly localized.
+
+        Returns:
+            None
+        """
+        acc, total_localized, total_count = self.get_stats()
+        print(f"Total Localized\t:\t{total_localized}")
         print(f"Total Count\t:\t{total_count}")
         print(f"Accuracy\t:\t{acc * 100:.2f}%")
 
@@ -270,7 +327,7 @@ class IoUEvaluator:
         union = (mask1 | mask2).sum()
         return intersection / union if union > 0 else 0
 
-    def calc(self):
+    def calc(self) -> float:
         """
         Calculates the mean Intersection over Union (mIoU) between ground truth masks and predicted masks.
 
@@ -292,7 +349,7 @@ class IoUEvaluator:
         self.mIoU = iou_sum / count if count > 0 else 0
         return self.mIoU
 
-    def print_stats(self, recalc=True):
+    def print_stats(self, recalc: bool = True):
         """
         Prints the mean Intersection over Union (mIoU) statistics.
 
@@ -332,7 +389,10 @@ class Args:
     )
 
 
-def get_stem(file_name):
+def get_stem(file_name: str) -> str:
+    """
+    Returns the stem (file name without extension).
+    """
     return os.path.splitext(file_name)[0]
 
 
@@ -494,7 +554,7 @@ def main(args: Args):
     # Print evaluation results
     loc_evaluator.print_stats()
     iou_evaluator.print_stats()
-    _, _, acc = loc_evaluator.get_stats()
+    acc, _, _ = loc_evaluator.get_stats()
     mIoU = iou_evaluator.calc()
 
     
