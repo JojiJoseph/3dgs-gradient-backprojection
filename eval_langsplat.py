@@ -1,3 +1,5 @@
+# This script is used for evaluating langsplat features
+
 from collections import defaultdict
 import json
 import time
@@ -7,14 +9,23 @@ import tyro
 import os
 import torch
 import cv2
-
-import numpy as np
-import matplotlib
-from sklearn.decomposition import PCA
 import open_clip
 import yaml
 from dataclasses import dataclass, field
+
+import numpy as np
+import matplotlib
+matplotlib.use("TkAgg")
+
+from utils import (
+    prune_by_gradients,
+    test_proper_pruning,
+    get_viewmat_from_colmap_image,
+    load_checkpoint,
+    torch_to_cv,
+)
 from utils import FeatureRenderer, to_builtin
+import pprint
 
 
 class LangSplatHelper:  # Not using CLIP/ClipModel to avoid confusion with clip_model
@@ -60,6 +71,49 @@ class LangSplatHelper:  # Not using CLIP/ClipModel to avoid confusion with clip_
         max_score = score.max()
         mask = score
         return mask, max_score
+
+    def get_location_and_relevancy_maps(self, feature_maps: list[torch.tensor], prompt: str):
+        """
+        Computes relevancy maps for a list of feature maps given a text prompt, and returns the location of the most relevant point, the combined relevancy map, and the most relevant individual map.
+
+        Args:
+            feature_maps (list[torch.Tensor]): A list of 2D feature maps (each as a torch.Tensor) to evaluate relevancy against the prompt.
+            prompt (str): The text prompt to compute relevancy for.
+
+        Returns:
+            tuple:
+                - (x, y) (tuple of int): The (x, y) coordinates of the maximum relevancy in the combined relevancy map.
+                - combined_relevancy_map (np.ndarray): The combined relevancy map as a 2D numpy array, where each position contains the maximum relevancy score across all feature maps.
+                - max_relevancy_map (np.ndarray): The relevancy map (as a 2D numpy array) from the feature map with the highest maximum relevancy score.
+
+        Note:
+            This method assumes that the feature maps and prompt embedding are compatible in terms of dimensions and device placement.
+        """
+
+        relevancy_maps = []
+        prompt_embedding = self.encode_text(prompt, normalize=True).float()
+        combined_relevancy_map = torch.zeros(
+            (feature_maps[0].shape[0], feature_maps[0].shape[1])
+        ).cuda()
+
+        relevancy_scores = []
+
+        for features in feature_maps:
+            mask, max_score = self.get_relevancy_map(
+                features, prompt_embedding=prompt_embedding
+            )
+            relevancy_maps.append(mask)
+            relevancy_scores.append(max_score.item())
+            combined_relevancy_map = torch.maximum(combined_relevancy_map, mask)
+
+        combined_relevancy_map = combined_relevancy_map.detach().cpu().numpy()
+
+        # Get x, y coordinate of maximum value
+        y, x = np.unravel_index(np.argmax(combined_relevancy_map), combined_relevancy_map.shape)
+
+        max_relevancy_map = relevancy_maps[np.argmax(relevancy_scores)].detach().cpu().numpy()
+
+        return (x, y), combined_relevancy_map, max_relevancy_map
 
 
 class LocalizationEvaluator:
@@ -124,43 +178,10 @@ class IoUEvaluator:
         print(f"mIoU\t:\t{self.mIoU * 100:.2f}%")
 
 
-def get_location_and_mask(feature_maps, prompt, lang_splat_helper: LangSplatHelper):
-
-    masks = []
-    prompt_embedding = lang_splat_helper.encode_text(prompt, normalize=True).float()
-    final_mask = torch.zeros(
-        (feature_maps[0].shape[0], feature_maps[0].shape[1])
-    ).cuda()
-
-    relavancy_scores = []
-
-    for features in feature_maps:
-        mask, max_score = lang_splat_helper.get_relevancy_map(
-            features, prompt_embedding=prompt_embedding
-        )
-        masks.append(mask)
-        relavancy_scores.append(max_score.item())
-        final_mask = torch.maximum(final_mask, mask)
-
-    final_mask = final_mask.detach().cpu().numpy()
-
-    # Get x, y coordinate of maximum value
-    y, x = np.unravel_index(np.argmax(final_mask), final_mask.shape)
-
-    seg_mask = masks[np.argmax(relavancy_scores)].detach().cpu().numpy()
-
-    return (x, y), final_mask, seg_mask
 
 
-matplotlib.use("TkAgg")
 
-from utils import (
-    prune_by_gradients,
-    test_proper_pruning,
-    get_viewmat_from_colmap_image,
-    load_checkpoint,
-    torch_to_cv,
-)
+
 
 
 @dataclass
@@ -174,9 +195,6 @@ class Args:
         "gsplat"  # Checkpoint format: "inria" (original) or "gsplat".
     )
     data_factor: int = 1  # Downscale resolution by this factor.
-    show_visual_feedback: bool = (
-        True  # Whether to show visual feedback during evaluation.
-    )
     tag: str = None  # Optional tag for this evaluation run.
     prune: bool = True  # Whether to prune the 3DGS using gradients.
     feature_paths: list[str] = field(
@@ -199,6 +217,31 @@ def is_inside_bbox(location, bbox):
     x, y = location
     return (x >= bbox[0]) and (x <= bbox[2]) and (y >= bbox[1]) and (y <= bbox[3])
 
+def relevancy_map_to_mask(relevancy_map: np.ndarray, thresh: float = 0.4, eps: float = 1e-9):
+    """
+    Converts a relevancy map to a binary mask based on a threshold.
+
+    The function first normalizes the input relevancy map to the range [0, 1], then rescales it to the range [-1, 1].
+    It applies a threshold to generate a binary mask, where values above the threshold are set to 255 and others to 0.
+
+    Args:
+        relevancy_map (np.ndarray): Input relevancy map as a NumPy array.
+        thresh (float, optional): Threshold value in the range [-1, 1] for mask generation. Defaults to 0.4.
+        eps (float, optional): Small epsilon value to avoid division by zero. Defaults to 1e-9.
+
+    Returns:
+        np.ndarray: Binary mask as a uint8 NumPy array with values 0 or 255.
+    """
+    # Normalize relevancy map in the range 0 to 1
+    relevancy_map = relevancy_map - relevancy_map.min()
+    relevancy_map = relevancy_map / (relevancy_map.max() + eps)
+
+    # Normalize relevancy_map to -1 to 1 and then threshold
+    mask = relevancy_map * 2 - 1 > thresh
+
+    # Convert it into uint8 mask
+    return mask.astype(np.uint8) * 255
+
 
 def main(args: Args):
 
@@ -207,16 +250,19 @@ def main(args: Args):
 
     torch.set_default_device("cuda")
 
+    # Already made inside __main__, but keeping in case any change in code outside the calling of this function
     os.makedirs(args.results_dir, exist_ok=True)
+    
     splats = load_checkpoint(
         args.checkpoint, args.data_dir, format=args.format, data_factor=args.data_factor
     )
+
     if args.prune:
         splats_optimized = prune_by_gradients(splats)
         test_proper_pruning(splats, splats_optimized)
         splats = splats_optimized
 
-    # Load all 4 checkpoints
+    # Load features for all 3 levels used for evaluation
     feature_path_1, feature_path_2, feature_path_3 = args.feature_paths
 
     features_1 = torch.load(feature_path_1)
@@ -224,42 +270,16 @@ def main(args: Args):
     features_3 = torch.load(feature_path_3)
 
     # Get all the json files in this label directory
-    json_files = glob.glob(os.path.join(args.label_dir, "*.json"))
+    label_files = glob.glob(os.path.join(args.label_dir, "*.json"))
 
-    json_file_stems = [os.path.splitext(os.path.basename(f))[0] for f in json_files]
-    json_file_stems.sort()
+    label_file_stems = [os.path.splitext(os.path.basename(f))[0] for f in label_files]
+    label_file_stems.sort()
 
     loc_evaluator = LocalizationEvaluator()
     iou_evaluator = IoUEvaluator()
-
-    # if False:
-    #     render_pca(
-    #         splats,
-    #         features_1,
-    #         None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
-    #         pca_on_gaussians=True,
-    #         scale=1.0,
-    #         feedback=show_visual_feedback,
-    #     )
-    #     render_pca(
-    #         splats,
-    #         features_2,
-    #         None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
-    #         pca_on_gaussians=True,
-    #         scale=1.0,
-    #         feedback=show_visual_feedback,
-    #     )
-    #     render_pca(
-    #         splats,
-    #         features_3,
-    #         None,  # f"{results_dir}/pca_gaussians_{tag}.gif",
-    #         pca_on_gaussians=True,
-    #         scale=1.0,
-    #         feedback=show_visual_feedback,
-    #     )
-
     lang_splat_helper = LangSplatHelper()
 
+    # Extract Gaussian Parameters
     means = splats["means"]
     colors_dc = splats["features_dc"]
     colors_rest = splats["features_rest"]
@@ -279,12 +299,12 @@ def main(args: Args):
         colors=colors,
         viewmats=None,
         Ks=None,
-        width=None,
-        height=None,
+        width=width,
+        height=height,
     )
 
     colmap_val_images = filter(
-        lambda x: get_stem(x.name) in json_file_stems,
+        lambda x: get_stem(x.name) in label_file_stems,
         splats["colmap_project"].images.values(),
     )
 
@@ -293,7 +313,9 @@ def main(args: Args):
         file_name = image.name
         stem = get_stem(file_name)
         json_path = os.path.join(args.label_dir, f"{stem}.json")
-        annotations = json.load(open(json_path))
+        
+        with open(json_path) as f:
+            annotations = json.load(f)
 
         viewmat = get_viewmat_from_colmap_image(image)
         feature_maps = []
@@ -320,15 +342,11 @@ def main(args: Args):
             gt_mask = np.zeros((int(height), int(width)), dtype=np.uint8)
             cv2.fillPoly(gt_mask, [segmentation], 255)
 
-            location, mask_combined, mask_max_relevancy = get_location_and_mask(
-                feature_maps, prompt=category, lang_splat_helper=lang_splat_helper
+            location, combined_relevancy_map, max_relevancy_map = lang_splat_helper.get_location_and_relevancy_maps(
+                feature_maps, prompt=category
             )
 
-            mask_thresh = mask_max_relevancy - mask_max_relevancy.min()
-            mask_thresh = mask_thresh / (mask_thresh.max() + 1e-5)
-
-            mask = mask_thresh * 2 - 1 > 0.4
-            mask = mask.astype(np.uint8) * 255
+            mask = relevancy_map_to_mask(max_relevancy_map, thresh=0.4)
 
             iou_evaluator.update(stem, category, mask, gt_mask)
 
@@ -338,13 +356,14 @@ def main(args: Args):
 
     loc_evaluator.print_stats()
     iou_evaluator.print_stats()
-    results_path = os.path.join(cfg.results_dir, f"langsplat_evaluation_{cfg.tag}.json")
+    results_path = os.path.join(args.results_dir, f"langsplat_evaluation_{args.tag}.json")
     _, _, acc = loc_evaluator.get_stats()
 
     mIoU = iou_evaluator.calc()
 
-    os.makedirs(cfg.results_dir, exist_ok=True)
-    json.dump({"accuracy": acc, "mIoU": mIoU}, open(results_path, "w"))
+    os.makedirs(args.results_dir, exist_ok=True)
+    with open(results_path, "w") as f:
+        json.dump({"accuracy": acc, "mIoU": mIoU}, f)
     print("mIoU", mIoU * 100)
 
 
@@ -353,12 +372,13 @@ if __name__ == "__main__":
     cfg = tyro.cli(Args)
 
     print("Configuration:")
-    print(cfg)
+    pprint.pprint(to_builtin(cfg))
     print("\n")
 
     # Save config
     os.makedirs(cfg.results_dir, exist_ok=True)
-    cfg_out_path = os.path.join(cfg.results_dir, f"langsplat_evaluation_{cfg.tag}.yaml")
+    tag = cfg.tag if cfg.tag is not None else time.strftime("%Y%m%d_%H%M%S")
+    cfg_out_path = os.path.join(cfg.results_dir, f"langsplat_evaluation_{tag}.yaml")
     with open(cfg_out_path, "w") as f:
         yaml.dump(to_builtin(cfg), f)
 
