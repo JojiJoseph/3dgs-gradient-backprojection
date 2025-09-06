@@ -4,7 +4,7 @@ import numpy as np
 import torch
 from lseg import LSegNet
 
-# registry.py
+# registry
 BACKPROJECTION_FEATURE_EXTRACTORS = {}
 
 
@@ -94,7 +94,6 @@ class DinoFeatureExtractor(FeatureExtractor):
 
     def extract_features(self, frame, metadata=None):
         with torch.inference_mode():
-            # Implement feature extraction logic for LSeg
             height, width = frame.shape[:2]
             output = torch.nn.functional.interpolate(
                 frame[None].permute(0, 3, 1, 2).cuda(),
@@ -134,7 +133,6 @@ class OneHotFeatureExtractor(FeatureExtractor):
 class FeatureMapFeatureExtractor(FeatureExtractor):
     def __init__(self, device, data_dir, feature_dir):
         super().__init__()
-        # self.path = os.path.join(data_dir, "identity_features")
         self.device = device
         self.feature_dir = feature_dir
         npys = [f for f in os.listdir(feature_dir) if f.endswith(".npy")]
@@ -153,8 +151,6 @@ class FeatureMapFeatureExtractor(FeatureExtractor):
         stem = os.path.splitext(file_name)[0]
         feats = np.load(os.path.join(self.feature_dir, f"{stem}.npy"))
         feats = torch.from_numpy(feats).float().to(self.device)
-        # feats = feats / torch.norm(feats, dim=1, keepdim=True)
-        # print(feats.shape)
         return feats
 
 
@@ -162,7 +158,6 @@ class FeatureMapFeatureExtractor(FeatureExtractor):
 class LangSplatFeatureExtractor(FeatureExtractor):
     def __init__(self, device, data_dir, feature_dir, level=0):
         super().__init__()
-        # self.path = os.path.join(data_dir, "identity_features")
         self.device = device
         self.feature_dir = feature_dir
         self.level = level
@@ -187,7 +182,6 @@ class LangSplatFeatureExtractor(FeatureExtractor):
         return feature_map
 
     def extract_features(self, frame, metadata):
-        # print(metadata["image_name"])
         file_name = metadata["image_name"].split("/")[-1]
         stem = os.path.splitext(file_name)[0]
         features_path = os.path.join(self.feature_dir, f"{stem}_f.npy")
