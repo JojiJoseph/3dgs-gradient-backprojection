@@ -261,6 +261,7 @@ def save_to_ckpt(
 def main(
     data_dir: str = "./data/garden",  # colmap path
     checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt",  # checkpoint path, can generate from original 3DGS repo
+    feature_path: str = "./results/garden/features_lseg_garden.pt",  # path to precomputed features
     results_dir: str = "./results/garden",  # output path
     rasterizer: Literal[
         "inria", "gsplat"
@@ -270,6 +271,7 @@ def main(
     data_factor: int = 4,
     show_visual_feedback: bool = True,
     export_checkpoint: bool = False,
+    prune: bool = True,
 ):
 
     if not torch.cuda.is_available():
@@ -281,10 +283,11 @@ def main(
     splats = load_checkpoint(
         checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
     )
-    splats_optimized = prune_by_gradients(splats)
-    test_proper_pruning(splats, splats_optimized)
-    splats = splats_optimized
-    features = torch.load(f"{results_dir}/features_lseg.pt")
+    if prune:
+        splats_optimized = prune_by_gradients(splats)
+        test_proper_pruning(splats, splats_optimized)
+        splats = splats_optimized
+    features = torch.load(feature_path)
     mask3d, mask3d_inv = get_mask3d_lseg(splats, features, prompt, neg_prompt)
     extracted, deleted, masked = apply_mask3d(splats, mask3d, mask3d_inv)
 
