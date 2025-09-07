@@ -5,6 +5,7 @@ from dataclasses import dataclass, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Union
+import warnings
 
 import matplotlib
 import numpy as np
@@ -172,7 +173,10 @@ class Args:
     checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt"  # checkpoint path, can generate from original 3DGS repo
     results_dir: str = "./results/garden"  # output path
     rasterizer: Literal[
-        "inria", "gsplat"
+        "inria", "gsplat", "ply"
+    ] | None = "gsplat"  # Original or GSplat for checkpoints
+    format: Literal[
+        "inria", "gsplat", "ply"
     ] = "gsplat"  # Original or GSplat for checkpoints
     data_factor: int = 4
     feature_field_batch_count: int = 1  # Number of batches to process for feature field
@@ -193,7 +197,13 @@ def main(
     data_dir = args.data_dir
     checkpoint = args.checkpoint
     results_dir = args.results_dir
-    rasterizer = args.rasterizer
+    format = args.format or args.rasterizer
+    if args.rasterizer:
+        warnings.warn(
+            "`rasterizer` is deprecated. Use `format` instead.", DeprecationWarning
+        )
+    if not format:
+        raise ValueError("Must specify --format or the deprecated --rasterizer")
     data_factor = args.data_factor
     feature_field_batch_count = args.feature_field_batch_count
     run_feature_field_on_cpu = args.run_feature_field_on_cpu
@@ -218,7 +228,7 @@ def main(
 
     os.makedirs(results_dir, exist_ok=True)
     splats = load_checkpoint(
-        checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
+        checkpoint, data_dir, format=format, data_factor=data_factor
     )
 
     if prune:

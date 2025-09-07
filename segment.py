@@ -10,6 +10,7 @@ from gsplat import rasterization
 import numpy as np
 import clip
 import matplotlib
+import warnings
 
 matplotlib.use("TkAgg")
 
@@ -265,6 +266,9 @@ def main(
     results_dir: str = "./results/garden",  # output path
     rasterizer: Literal[
         "inria", "gsplat"
+    ] | None = None,  # Original or gsplat for checkpoints,
+    format: Literal[
+        "inria", "gsplat", "ply"
     ] = "gsplat",  # Original or gsplat for checkpoints
     prompt: str = "Table",
     neg_prompt: str = "Vase;Other",
@@ -280,8 +284,15 @@ def main(
     torch.set_default_device("cuda")
 
     os.makedirs(results_dir, exist_ok=True)
+    format = format or rasterizer
+    if rasterizer:
+        warnings.warn(
+            "`rasterizer` is deprecated. Use `format` instead.", DeprecationWarning
+        )
+    if not format:
+        raise ValueError("Must specify --format or the deprecated --rasterizer")
     splats = load_checkpoint(
-        checkpoint, data_dir, rasterizer=rasterizer, data_factor=data_factor
+        checkpoint, data_dir, format=format, data_factor=data_factor
     )
     if prune:
         splats_optimized = prune_by_gradients(splats)
