@@ -9,6 +9,8 @@ from gsplat import rasterization
 import warnings
 from plyfile import PlyData
 import json
+from rich.console import Console
+from rich.table import Table
 
 
 
@@ -273,9 +275,16 @@ def prune_by_gradients(splats):
         colors.grad.zero_()
 
     mask = gaussian_grads > 0
-    print("Total splats", len(gaussian_grads))
-    print("Pruned", (~mask).sum(), "splats")
-    print("Remaining", mask.sum(), "splats")
+    # console = Console()
+    # table = Table(title="Pruning Report")
+    # table.add_column("Metric", style="cyan", no_wrap=True)
+    # table.add_column("Value", style="magenta")
+
+    # table.add_row("Total splats", str(len(gaussian_grads)))
+    # table.add_row("Pruned splats", str((~mask).sum().item()))
+    # table.add_row("Remaining splats", str(mask.sum().item()))
+
+    # console.print(table)
     splats = splats.copy()
     splats["means"] = splats["means"][mask]
     splats["features_dc"] = splats["features_dc"][mask]
@@ -371,11 +380,19 @@ def test_proper_pruning(splats, splats_after_pruning):
     assert max_pixel_error < 1 / (
         255 * 2
     ), "Max pixel error should be less than 1/(255*2), safety margin"
-    print(
-        "Report {}% pruned, max pixel error = {}, total pixel error = {}".format(
-            percentage_pruned, max_pixel_error, total_error
-        )
-    )
+    console = Console()
+    table = Table(title="Pruning Report")
+    table.add_column("Metric", style="cyan", no_wrap=True)
+    table.add_column("Value", style="magenta")
+
+    table.add_row("Percentage Pruned", f"{percentage_pruned:.2f}%")
+    table.add_row("Max Pixel Error", f"{max_pixel_error:.6f}")
+    table.add_row("Total Pixel Error", f"{total_error:.6f}")
+    table.add_row("Original Splats", str(len(splats["means"])))
+    table.add_row("Pruned Splats", str(len(splats["means"]) - len(splats_after_pruning["means"])))
+    table.add_row("Remaining Splats", str(len(splats_after_pruning["means"])))
+
+    console.print(table)
 
 def load_checkpoint_blender(
     checkpoint: str,
