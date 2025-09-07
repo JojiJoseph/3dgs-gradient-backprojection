@@ -162,6 +162,11 @@ def create_feature_field(
     return gaussian_features
 
 @dataclass
+class FeatureParams:
+    level: int = 0  # LangSplat Level
+    feature_dir: str | None = None  # Directory for precomputed feature maps
+
+@dataclass
 class Args:
     data_dir: str = "./data/garden"  # colmap path
     checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt"  # checkpoint path, can generate from original 3DGS repo
@@ -174,13 +179,13 @@ class Args:
     run_feature_field_on_cpu: bool = False  # Run feature field on CPU
     feature: str = "lseg"  # Feature field type
     percentage_frames: int = 100  # Percentage of frames to process
-    feature_dir: str | None = None  # Directory for precomputed feature maps
+    # feature_dir: str | None = None  # Directory for precomputed feature maps
     n_views: Union[
         int, None
     ] = None  # Number of views to process, None for to use percentage_frames,
     tag: str = "garden"
-    prune: bool = True  # Whether to prune the splats before backprojection,
-    level: int = 0  # LangSplat Level
+    prune: bool = True  # Whether to prune the splats before backprojection
+    feature_params: FeatureParams = FeatureParams()  # Additional parameters for feature extractor
 
 def main(
     args: Args
@@ -194,11 +199,11 @@ def main(
     run_feature_field_on_cpu = args.run_feature_field_on_cpu
     feature = args.feature
     percentage_frames = args.percentage_frames
-    feature_dir = args.feature_dir
+    feature_dir = args.feature_params.feature_dir
     n_views = args.n_views
     tag = args.tag
     prune = args.prune
-    level = args.level
+    level = args.feature_params.level
 
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for this demo")
