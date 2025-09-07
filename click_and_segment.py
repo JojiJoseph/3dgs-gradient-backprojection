@@ -20,6 +20,51 @@ from utils import (
 
 device = torch.device("cuda:0")
 
+from scipy.spatial.transform import Rotation as R
+
+def view_matrix_to_rpy_t(view_matrix):
+    """
+    Convert a 4x4 view matrix to roll, pitch, yaw (RPY) and translation.
+    """
+    R_mat = view_matrix[:3, :3]  # Extract rotation
+    t_vec = view_matrix[:3, 3]   # Extract translation
+    rpy = R.from_matrix(R_mat).as_euler('xyz', degrees=True)  # Convert to roll, pitch, yaw
+    return rpy, t_vec
+
+def nearest_view_matrix(A, view_matrices, weight_translation=1.0):
+    """
+    Find the index of the nearest view matrix to A.
+    
+    Args:
+        A (torch.Tensor): Target 4x4 view matrix.
+        view_matrices (torch.Tensor): (N, 4, 4) Tensor of view matrices.
+        weight_translation (float): Weighting factor for translation distance.
+    
+    Returns:
+        int: Index of the nearest view matrix.
+    """
+    # Extract rotation and translation
+    R_A = A[:3, :3]
+    t_A = A[:3, 3]
+    
+    R_matrices = view_matrices[:, :3, :3]  # (N, 3, 3)
+    t_matrices = view_matrices[:, :3, 3]   # (N, 3)
+
+    # Compute rotation difference: d_R(A, V_i) = cos⁻¹((Tr(R_A R_i^T) - 1) / 2)
+    R_diff = torch.matmul(R_A, R_matrices.transpose(1, 2))  # (N, 3, 3)
+    trace_values = torch.einsum('nii->n', R_diff)  # Extract trace for each matrix
+    rotation_distances = torch.acos(torch.clamp((trace_values - 1) / 2, -1, 1))  # Clamp for stability
+
+    # Compute translation difference: ||t_A - t_i||
+    translation_distances = torch.norm(t_A - t_matrices, dim=1)
+
+    # Compute weighted sum of distances
+    total_distances = rotation_distances + weight_translation * translation_distances
+
+    # Return the index of the minimum distance
+    return torch.argmin(total_distances).item()
+
+
 
 def calculate_3d_to_2d(viewmat, fx, fy, cx, cy, position_homo):
     x, y, z, _ = position_homo
@@ -156,6 +201,7 @@ def main(
     ] = "gsplat",  # Original or GSplat for checkpoints
     results_dir: str = "./results/garden",
     data_factor: int = 4,
+    feature_path: str = "./results/garden/features_lseg_garden.pt",
 ):
 
     torch.set_default_device("cuda")
@@ -174,12 +220,24 @@ def main(
     opacities = torch.sigmoid(opacities)
     scales = torch.exp(scales)
     colors = torch.cat([splats["features_dc"], splats["features_rest"]], 1)
-    features = torch.load(f"{results_dir}/features_lseg.pt")
+
+    features = torch.load(feature_path)
 
     K = splats["camera_matrix"].float()
 
     width = int(K[0, 2] * 2)
     height = int(K[1, 2] * 2)
+
+    
+
+
+    # Load viewmats from colmap
+
+    viewmats = []
+    for image in splats["colmap_project"].images.values():
+        viewmats.append(get_viewmat_from_colmap_image(image))
+
+    viewmats = torch.stack(viewmats).to(device)
 
     cv2.namedWindow("Click and Segment", cv2.WINDOW_NORMAL)
     ui_manager = UIManager("Click and Segment")
@@ -248,7 +306,7 @@ def main(
             K[None],
             width=width,
             height=height,
-            render_mode="RGB+D",
+            render_mode="RGB+ED",
         )
 
         output, depth = output[0, ..., :512], output[0, ..., 512]
@@ -397,19 +455,33 @@ def main(
             fy = K[1, 1]
             cx = K[0, 2]
             cy = K[1, 2]
-            viewmat = viewmat.cpu().numpy()
+            viewmat_np = viewmat.cpu().numpy()
             for pos in positions_3d_positives:
-                x, y = calculate_3d_to_2d(viewmat, fx, fy, cx, cy, pos)
+                x, y = calculate_3d_to_2d(viewmat_np, fx, fy, cx, cy, pos)
                 cv2.circle(output_cv, (x, y), 10, (0, 255, 0), -1)
             for pos in positions_3d_negatives:
-                x, y = calculate_3d_to_2d(viewmat, fx, fy, cx, cy, pos)
+                x, y = calculate_3d_to_2d(viewmat_np, fx, fy, cx, cy, pos)
                 cv2.circle(output_cv, (x, y), 10, (0, 0, 255), -1)
             cv2.imshow("Click and Segment", output_cv)
             key = cv2.waitKey(10)
             if key == ord("q"):
                 break
+            if key == ord("n"):
+                print("Next viewmat")
+                # viewmat = get_nearest_viewmat(viewmats, ui_manager)
+                nearest_idx = nearest_view_matrix(viewmat, viewmats, weight_translation=1.0)
+                viewmat = viewmats[nearest_idx]
+                roll, pitch, yaw = view_matrix_to_rpy_t(viewmat.cpu().numpy())[0]
+                cv2.setTrackbarPos("Roll", "Click and Segment", int(roll))
+                cv2.setTrackbarPos("Pitch", "Click and Segment", int(pitch))
+                cv2.setTrackbarPos("Yaw", "Click and Segment", int(yaw))
+                cv2.setTrackbarPos("X", "Click and Segment", int(viewmat[0, 3] * 100))
+                cv2.setTrackbarPos("Y", "Click and Segment", int(viewmat[1, 3] * 100))
+                cv2.setTrackbarPos("Z", "Click and Segment", int(viewmat[2, 3] * 100))
         if key == ord("q"):
             break
+            
+
 
 
 if __name__ == "__main__":
