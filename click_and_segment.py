@@ -199,9 +199,10 @@ def main(
     rasterizer: Literal[
         "inria", "gsplat"
     ] = "gsplat",  # Original or GSplat for checkpoints
-    results_dir: str = "./results/garden",
+    results_dir: str = "./results/garden", # Not used as of now
     data_factor: int = 4,
     feature_path: str = "./results/garden/features_lseg_garden.pt",
+    feature: str = "lseg"
 ):
 
     torch.set_default_device("cuda")
@@ -222,6 +223,7 @@ def main(
     colors = torch.cat([splats["features_dc"], splats["features_rest"]], 1)
 
     features = torch.load(feature_path)
+    dim = features.shape[-1]
 
     K = splats["camera_matrix"].float()
 
@@ -242,34 +244,41 @@ def main(
     cv2.namedWindow("Click and Segment", cv2.WINDOW_NORMAL)
     ui_manager = UIManager("Click and Segment")
 
-    net = LSegNet(
-        backbone="clip_vitl16_384",
-        features=256,
-        crop_size=480,
-        arch_option=0,
-        block_depth=0,
-        activation="lrelu",
-    )
-    # Load pre-trained weights
-    net.load_state_dict(torch.load("./checkpoints/lseg_minimal_e200.ckpt"))
-    net.eval()
-    net.cuda()
+    if feature == "lseg":
 
-    # Preprocess the text prompt
-    clip_text_encoder = net.clip_pretrained.encode_text
+        net = LSegNet(
+            backbone="clip_vitl16_384",
+            features=256,
+            crop_size=480,
+            arch_option=0,
+            block_depth=0,
+            activation="lrelu",
+        )
+        # Load pre-trained weights
+        net.load_state_dict(torch.load("./checkpoints/lseg_minimal_e200.ckpt"))
+        net.eval()
+        net.cuda()
 
-    other_prompt = clip.tokenize(["other"])
-    other_prompt = other_prompt.cuda()
-    other_prompt = clip_text_encoder(other_prompt)  # N, 512, N - number of prompts
-    other_prompt = torch.nn.functional.normalize(other_prompt, dim=1).float()
+        # Preprocess the text prompt
+        clip_text_encoder = net.clip_pretrained.encode_text
+
+        other_prompt = clip.tokenize(["other"])
+        other_prompt = other_prompt.cuda()
+        other_prompt = clip_text_encoder(other_prompt)  # N, 512, N - number of prompts
+        other_prompt = torch.nn.functional.normalize(other_prompt, dim=1).float()
+    else:
+        other_prompt = None
 
     mask_3d = None
 
     positions_3d_positives = []
     positions_3d_negatives = []
 
-    positive_prompts = torch.zeros(0, 512).to(device)
-    negative_prompts = other_prompt.to(device)
+    positive_prompts = torch.zeros(0, dim).to(device)
+    if other_prompt is not None:
+        negative_prompts = other_prompt.to(device)
+    else:
+        negative_prompts = torch.zeros(0, dim).to(device)
 
     def trigger_callback(xy, event, ctrl_pressed):
         if xy[0] >= width or xy[1] >= height:
@@ -309,7 +318,9 @@ def main(
             render_mode="RGB+ED",
         )
 
-        output, depth = output[0, ..., :512], output[0, ..., 512]
+        dim = output.shape[-1]-1
+
+        output, depth = output[0, ..., :dim], output[0, ..., dim]
 
         fx = K[0, 0]
         fy = K[1, 1]
@@ -371,7 +382,7 @@ def main(
         nonlocal mask_3d
         if not positions_3d_positives:
             mask_3d = None
-        else:
+        elif len(negative_prompts) > 0:
             scores_pos = features @ positive_prompts.T  # [N, P]
             scores_pos = scores_pos.max(dim=1)  # [N]
             scores_neg = features @ negative_prompts.T  # [N, P]
