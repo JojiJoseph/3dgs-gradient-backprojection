@@ -1,20 +1,16 @@
-from copy import deepcopy
 from typing import Literal
 import tyro
 import os
 import torch
 import cv2
 import imageio  # To generate gifs
-import pycolmap_scene_manager as pycolmap
 from gsplat import rasterization
 import numpy as np
-import clip
 import matplotlib
 from sklearn.decomposition import PCA
 
 matplotlib.use("TkAgg")
 
-from lseg import LSegNet
 from utils import (
     prune_by_gradients,
     test_proper_pruning,
@@ -119,10 +115,10 @@ def render_pca(
 def main(
     data_dir: str = "./data/garden",  # colmap path
     checkpoint: str = "./data/garden/ckpts/ckpt_29999_rank0.pt",  # checkpoint path, can generate from original 3DGS repo
-    feature_checkpoint: str = "./data/garden/features_dino.pt",  # path to features, can generate from original 3DGS repo
+    feature_checkpoint: str = "./results/garden/features_dino.pt",  # path to features, can generate from original 3DGS repo
     results_dir: str = "./results/garden",  # output path
     format: Literal[
-        "inria", "gsplat"
+        "inria", "gsplat", "ply"
     ] = "gsplat",  # Original or gsplat for checkpoints
     data_factor: int = 4,
     show_visual_feedback: bool = True,
@@ -143,10 +139,7 @@ def main(
         splats_optimized = prune_by_gradients(splats)
         test_proper_pruning(splats, splats_optimized)
         splats = splats_optimized
-    # if feature == "lseg":
-    #     features = torch.load(f"{results_dir}/features_lseg.pt")
-    # elif feature == "dino":
-    #     features = torch.load(f"{results_dir}/features_dino.pt")
+
     features = torch.load(feature_checkpoint)
 
     if tag is None:
