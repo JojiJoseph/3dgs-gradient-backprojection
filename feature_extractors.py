@@ -7,6 +7,7 @@ from lseg import LSegNet
 import clip
 import open_clip
 from PIL import Image
+from torchvision.transforms import Normalize
 # registry
 BACKPROJECTION_FEATURE_EXTRACTORS = {}
 
@@ -57,8 +58,11 @@ class LSegFeatureExtractor(FeatureExtractor):
         self.device = device
         self.net = net
         self.dim = 512
+        # self.normalize_transform = Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        self.normalize_transform = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
-    def extract_features(self, frame, metadata=None):
+    def extract_features(self, frame, metadata=None, normalize_input=True):
+        
         with torch.no_grad():
             # Implement feature extraction logic for LSeg
             height, width = frame.shape[:2]
@@ -68,6 +72,9 @@ class LSegFeatureExtractor(FeatureExtractor):
                 mode="bilinear",
             )
             frame.to(self.device)
+            if normalize_input:
+                frame = self.normalize_transform(frame)
+            
             feats = self.net.forward(frame)
             feats = torch.nn.functional.normalize(feats, dim=1)
         feats = torch.nn.functional.interpolate(
