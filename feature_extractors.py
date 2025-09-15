@@ -5,7 +5,8 @@ import numpy as np
 import torch
 from lseg import LSegNet
 import clip
-
+import open_clip
+from PIL import Image
 # registry
 BACKPROJECTION_FEATURE_EXTRACTORS = {}
 
@@ -346,4 +347,92 @@ class OvsClipTextFeatureExtractor(FeatureExtractor):
             return None
         
         feats = self._create_feature_map(features_path)
+        return feats
+    
+@register_feature_extractor("clip-image-3dovs")
+class OvsClipImageFeatureExtractor(FeatureExtractor):
+    def __init__(self, device, data_dir):
+        super().__init__()
+        self.device = device
+        self.feature_dir = os.path.join(data_dir, "segmentations")
+        classes_path = os.path.join(self.feature_dir, "classes.txt")
+        with open(classes_path, 'r') as f:
+            classes = f.readlines()
+        self.classes = sorted([c.strip() for c in classes])
+
+        self.clip, _, self.preprocess = open_clip.create_model_and_transforms(
+                "ViT-B-16", pretrained="laion2b_s34b_b88k"
+        )
+
+        self.clip.eval()
+        self.clip.to(device)
+        
+
+        self.device = device
+        self.dim = 512
+        
+
+        # seg_directories
+        seg_directories = [d for d in os.listdir(self.feature_dir) if os.path.isdir(os.path.join(self.feature_dir, d))]
+        seg_directories = sorted(seg_directories)
+        self.train_dirs = seg_directories[:-1] # Not exactly train dirs though
+        self.test_dir = seg_directories[-1]
+
+
+    def _create_feature_map(self, frame, features_path):
+
+        # preprocessed_frame = self.preprocess(frame.permute(2,0,1)).unsqueeze(0).to(self.device)
+        # print(preprocessed_frame.shape, preprocessed_frame.min(), preprocessed_frame.max())
+        preprocessed_frame = frame.permute(2, 0, 1)
+        
+
+
+        # eye = torch.eye(self.dim)
+        feature_map = None
+        for index, class_ in enumerate(self.classes):
+            mask_path = os.path.join(features_path, f"{class_}.png")
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                
+            mask_height, mask_width = mask.shape
+            mask = cv2.resize(mask, (mask_width // 4, mask_height // 4)) # TODO: Change hardcoding
+            # Get bounds of the mask
+            x, y, w, h = cv2.boundingRect(mask)
+            mask_th = torch.from_numpy(mask) > 0.5
+            mask_th = mask_th.float().to(self.device)
+            masked_frame = mask_th[None] * preprocessed_frame
+            masked_frame = masked_frame[:,y:y+h, x:x+w]
+            # Padd
+            if w > h:
+                diff = w - h
+                pad_top = diff // 2
+                pad_bottom = diff - pad_top
+                masked_frame = torch.nn.functional.pad(masked_frame, (0, 0, pad_top, pad_bottom), value=0)
+            elif h > w:
+                diff = h - w
+                pad_left = diff // 2
+                pad_right = diff - pad_left
+                masked_frame = torch.nn.functional.pad(masked_frame, (pad_left, pad_right, 0, 0), value=0)
+            masked_frame = masked_frame.permute(1,2,0).cpu().numpy()
+            # print(masked_frame.shape, masked_frame.min(), masked_frame.max())
+            masked_frame = cv2.resize(masked_frame,(224,224))
+            image = Image.fromarray((masked_frame*255).astype(np.uint8))
+            masked_frame = torch.from_numpy(masked_frame).permute(2,0,1).unsqueeze(0).to(self.device)
+            # image = PIL.Image
+            preprocessed_image = self.preprocess(image).unsqueeze(0).to(self.device)
+            feature = self.clip.encode_image(preprocessed_image).float()[0]
+            # print(feature.shape, feature.min(), feature.max())
+
+            if feature_map is None:
+                feature_map = torch.zeros((mask.shape[0], mask.shape[1], self.dim), dtype=torch.float32)
+            feature_map[mask > 128] = torch.nn.functional.normalize(feature, dim=-1)
+        return feature_map
+
+    def extract_features(self, frame, metadata):
+        file_name = metadata["image_name"].split("/")[-1]
+        stem = os.path.splitext(file_name)[0]
+        features_path = os.path.join(self.feature_dir, f"{stem}")
+        if not os.path.exists(features_path):
+            return None
+        
+        feats = self._create_feature_map(frame, features_path)
         return feats
