@@ -42,7 +42,7 @@ def create_feature_field(
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not use_cpu else "cpu"
     )
-    if feature_type == "one-hot":
+    if feature_type in ["one-hot","one-hot-3dovs"]:
         data_dir = splats["data_dir"]
         feature_extractor = get_feature_extractor(feature_type, device, data_dir=data_dir)
     elif feature_type == "feature-map":
@@ -109,6 +109,8 @@ def create_feature_field(
                 sh_degree=3,
             )
             feats = feature_extractor.extract_features(output[0], metadata)
+            if feats is None:
+                continue
 
         output_for_grad, _, meta = rasterization(
             means,

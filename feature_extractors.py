@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 import os
+import cv2
 import numpy as np
 import torch
 from lseg import LSegNet
@@ -190,3 +191,86 @@ class LangSplatFeatureExtractor(FeatureExtractor):
         segments = np.load(segments_path).astype(int)  # (4, H, W)
         feature_map = self._create_feature_map(features, segments, self.level)
         return torch.from_numpy(feature_map).float().to(self.device)
+
+@register_feature_extractor("scannet-instance")
+class ScanNetInstanceFeatureExtractor(FeatureExtractor):
+    def __init__(self, device, data_dir, feature_dir, level=0,max_classes=100):
+        super().__init__()
+        self.device = device
+        self.feature_dir = feature_dir
+        self.level = level
+        # Find the name of data_dir
+        scene_name = os.path.basename(os.path.normpath(data_dir))
+        self.scene_name = scene_name
+        self.max_classes = max_classes
+        self.dim = max_classes  # One-hot encoding dimension
+
+    def set_level(self, level):
+        self.level = level
+
+    def _create_feature_map(self, features, segments, level):
+        seg_map = segments[level]  # (H, W)
+        mask = seg_map != -1
+        feature_map = np.zeros(
+            (seg_map.shape[0], seg_map.shape[1], features.shape[1]), dtype=np.float32
+        )
+        feature_map[mask] = features[seg_map[mask]]
+        return feature_map
+
+    def extract_features(self, frame, metadata):
+        file_name = metadata["image_name"].split("/")[-1]
+        stem = os.path.splitext(file_name)[0]
+        features_path = os.path.join(self.feature_dir, f"{stem}.png")
+        feature_map = cv2.imread(features_path, cv2.IMREAD_UNCHANGED)
+        feature_map_one_hot = np.zeros((feature_map.shape[0], feature_map.shape[1], self.max_classes), dtype=np.float32)
+        eye = np.eye(self.max_classes)
+        feature_map_one_hot = eye[feature_map]
+
+        return torch.from_numpy(feature_map_one_hot).float().to(self.device)
+    
+
+@register_feature_extractor("one-hot-3dovs")
+class Ovs3DOneHotFeatureExtractor(FeatureExtractor):
+    def __init__(self, device, data_dir):
+        super().__init__()
+        self.device = device
+        self.feature_dir = os.path.join(data_dir, "segmentations")
+        classes_path = os.path.join(self.feature_dir, "classes.txt")
+        with open(classes_path, 'r') as f:
+            classes = f.readlines()
+        self.classes = sorted([c.strip() for c in classes])
+
+        self.dim = len(self.classes)
+        
+        # seg_directories
+        seg_directories = [d for d in os.listdir(self.feature_dir) if os.path.isdir(os.path.join(self.feature_dir, d))]
+        seg_directories = sorted(seg_directories)
+        self.train_dirs = seg_directories[:-1] # Not exactly train dirs though
+        self.test_dir = seg_directories[-1]
+
+
+    def _create_feature_map(self, features_path):
+
+        eye = torch.eye(self.dim)
+        feature_map = None
+        for index, class_ in enumerate(self.classes):
+            mask_path = os.path.join(features_path, f"{class_}.png")
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                
+            mask_height, mask_width = mask.shape
+            mask = cv2.resize(mask, (mask_width // 4, mask_height // 4)) # TODO: Change hardcoding
+            if feature_map is None:
+                feature_map = torch.zeros((mask.shape[0], mask.shape[1], self.dim), dtype=torch.float32)
+            feature_map[mask > 128] = eye[index]  # Assuming mask is binary with values 0 and 255
+        return feature_map
+
+    def extract_features(self, frame, metadata):
+        file_name = metadata["image_name"].split("/")[-1]
+        stem = os.path.splitext(file_name)[0]
+        features_path = os.path.join(self.feature_dir, f"{stem}")
+        if not os.path.exists(features_path):
+            return None
+        
+        feats = self._create_feature_map(features_path)
+        return feats
+        

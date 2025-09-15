@@ -151,7 +151,7 @@ def main(
         features,
         f"{results_dir}/pca_gaussians_{tag}.gif",
         pca_on_gaussians=True,
-        scale=0.20,
+        scale=0.0,
         feedback=show_visual_feedback,
     )
 
