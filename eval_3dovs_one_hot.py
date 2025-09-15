@@ -101,9 +101,7 @@ def main(args: Args):
     with open(classes_path, "r") as f:
         classes = [line.strip() for line in f.readlines()]
     classes = sorted(classes)
-    # print(classes)
     last_dir = sorted(dir_name for dir_name in os.listdir(os.path.join(args.data_dir, "segmentations")) if os.path.isdir(os.path.join(args.data_dir, "segmentations",dir_name)))[-1]
-    # print(last_dir)
     
     ious = []
     accs = []
@@ -128,28 +126,19 @@ def main(args: Args):
                 colors_temp[~mask3d] = 0
                 colors_temp[mask3d] = 1
                 out, _, _ = renderer.render(viewmats=viewmat[None], Ks=K[None], colors=colors_temp[...,0],sh_degree=None)
-                # cv2.imshow(class_, out[0].cpu().numpy()[...,::-1])
-                # Medianfilter
                 mask = cv2.medianBlur((out[0].cpu().numpy()[...,0] > 0.5).astype(np.uint8), 5)
-                # cv2.imshow(f"{class_}_mask", mask.astype(np.uint8)*255)
                 gt_mask_path = os.path.join(args.data_dir, "segmentations", image_stem, f"{class_}.png")
                 gt_mask = cv2.imread(gt_mask_path, cv2.IMREAD_GRAYSCALE)
                 gt_mask = cv2.resize(gt_mask, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
                 iou = get_iou(gt_mask>0, mask)
                 accs.append(((gt_mask>0)==mask).sum()/gt_mask.size)
-                # print(iou)
-                combined = cv2.hconcat([mask.astype(np.uint8)*255, gt_mask])
-                # cv2.imshow(f"{class_}_comparison", combined)
-                # cv2.waitKey(1)
                 ious.append(iou)
 
-    # cv2.destroyAllWindows()
     print(ious)
     print(accs)
     print("mIoU", mIoU := np.mean(ious))
     print("mAcc", acc := np.mean(accs))
 
-    # exit()
     # Save the results
     results_path = os.path.join(
         args.results_dir, f"3dovs_one_hot_evaluation_{args.tag}.json"

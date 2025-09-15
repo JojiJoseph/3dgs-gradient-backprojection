@@ -44,7 +44,7 @@ class Args:
     data_factor: int = 4  # Downscale resolution by this factor.
     tag: str = None  # Optional tag for this evaluation run.
     prune: bool = True  # Whether to prune the 3DGS using gradients.
-    feature_path: str = "./results/3DOVS_feats/bed/features_clip_image_3dovs_bed.pt"
+    feature_path: str = "./results/3DOVS_feats/bed/features_lseg_bed.pt"
 
 
 def get_iou(gt_mask, mask):
@@ -107,6 +107,8 @@ def main(args: Args):
     width = K[0, 2] * 2
     height = K[1, 2] * 2
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     renderer = FeatureRenderer(
         means=means,
         quats=quats,
@@ -126,14 +128,32 @@ def main(args: Args):
     
     classes = sorted(classes)
 
-    clip_model, _, preprocess = open_clip.create_model_and_transforms(
-                "ViT-B-16", pretrained="laion2b_s34b_b88k"
+    net = LSegNet(
+            backbone="clip_vitl16_384",
+            features=256,
+            crop_size=480,
+            arch_option=0,
+            block_depth=0,
+            activation="lrelu",
+        )
+    # Load pre-trained weights
+    net.load_state_dict(
+        torch.load("./checkpoints/lseg_minimal_e200.ckpt", map_location=device)
     )
+    net.eval()
+    net.cuda()
 
-    clip_model.eval()
-    clip_model.to("cuda")
+    # Preprocess the text prompt
+    clip_text_encoder = net.clip_pretrained.encode_text
 
-    text_embeddings = clip_model.encode_text(open_clip.tokenize(classes+["things","stuff","texture","object"]).cuda()).float()
+    # pos_prompt_length = len(prompt.split(";"))
+
+    # prompts = prompt.split(";") + neg_prompt.split(";")
+
+    tokens = open_clip.tokenize(classes)#+["other"])
+    text_embeddings = clip_text_encoder(tokens.cuda()).float()
+
+    # text_embeddings = clip_model.encode_text(open_clip.tokenize(classes+["things","stuff","texture","object"]).cuda()).float()
     text_embeddings = torch.nn.functional.normalize(text_embeddings, dim=-1)
     features = torch.nn.functional.normalize(features, dim=-1)
     last_dir = sorted(dir_name for dir_name in os.listdir(os.path.join(args.data_dir, "segmentations")) if os.path.isdir(os.path.join(args.data_dir, "segmentations",dir_name)))[-1]
@@ -182,7 +202,7 @@ def main(args: Args):
 
     # Save the results
     results_path = os.path.join(
-        args.results_dir, f"3dovs_clip_image_evaluation_{args.tag}.json"
+        args.results_dir, f"3dovs_lseg_evaluation_2_{args.tag}.json"
     )
     os.makedirs(args.results_dir, exist_ok=True)
     with open(results_path, "w") as f:

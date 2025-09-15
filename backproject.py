@@ -42,7 +42,7 @@ def create_feature_field(
     device = torch.device(
         "cuda" if torch.cuda.is_available() and not use_cpu else "cpu"
     )
-    if feature_type in ["one-hot","one-hot-3dovs", "clip-text-3dovs"]:
+    if feature_type in ["one-hot","one-hot-3dovs", "clip-text-3dovs","clip-image-3dovs"]:
         data_dir = splats["data_dir"]
         feature_extractor = get_feature_extractor(feature_type, device, data_dir=data_dir)
     elif feature_type == "feature-map":

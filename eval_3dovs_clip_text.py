@@ -18,7 +18,7 @@ import pprint
 import matplotlib
 
 from lseg import LSegNet
-import open_clip
+import clip
 
 matplotlib.use("TkAgg")  # To avoid conflict with opencv
 
@@ -44,7 +44,7 @@ class Args:
     data_factor: int = 4  # Downscale resolution by this factor.
     tag: str = None  # Optional tag for this evaluation run.
     prune: bool = True  # Whether to prune the 3DGS using gradients.
-    feature_path: str = "./results/3DOVS_feats/bed/features_clip_image_3dovs_bed.pt"
+    feature_path: str = "./results/3DOVS_feats/bed/features_clip_text_3dovs_bed.pt"
 
 
 def get_iou(gt_mask, mask):
@@ -126,16 +126,7 @@ def main(args: Args):
     
     classes = sorted(classes)
 
-    clip_model, _, preprocess = open_clip.create_model_and_transforms(
-                "ViT-B-16", pretrained="laion2b_s34b_b88k"
-    )
-
-    clip_model.eval()
-    clip_model.to("cuda")
-
-    text_embeddings = clip_model.encode_text(open_clip.tokenize(classes+["things","stuff","texture","object"]).cuda()).float()
-    text_embeddings = torch.nn.functional.normalize(text_embeddings, dim=-1)
-    features = torch.nn.functional.normalize(features, dim=-1)
+    text_embeddings = clip_text_encoder(clip.tokenize(classes).cuda()).float()
     last_dir = sorted(dir_name for dir_name in os.listdir(os.path.join(args.data_dir, "segmentations")) if os.path.isdir(os.path.join(args.data_dir, "segmentations",dir_name)))[-1]
     
     ious = []
@@ -163,17 +154,12 @@ def main(args: Args):
                 colors_temp[mask3d] = 1
                 out, _, _ = renderer.render(viewmats=viewmat[None], Ks=K[None], colors=colors_temp[...,0],sh_degree=None)
                 mask = cv2.medianBlur((out[0].cpu().numpy()[...,0] > 0.5).astype(np.uint8), 5)
-                # cv2.imshow("Mask", mask*255)
-                # cv2.waitKey(0)
                 gt_mask_path = os.path.join(args.data_dir, "segmentations", image_stem, f"{class_}.png")
                 gt_mask = cv2.imread(gt_mask_path, cv2.IMREAD_GRAYSCALE)
                 gt_mask = cv2.resize(gt_mask, (mask.shape[1], mask.shape[0]), interpolation=cv2.INTER_NEAREST)
                 iou = get_iou(gt_mask>0, mask)
                 accs.append(((gt_mask>0)==mask).sum()/gt_mask.size)
                 ious.append(iou)
-                # combined = cv2.hconcat([gt_mask, (mask*255)])
-                # cv2.imshow("Combined", combined)
-                # cv2.waitKey(0)
 
     print(ious)
     print(accs)
@@ -182,7 +168,7 @@ def main(args: Args):
 
     # Save the results
     results_path = os.path.join(
-        args.results_dir, f"3dovs_clip_image_evaluation_{args.tag}.json"
+        args.results_dir, f"3dovs_clip_text_evaluation_{args.tag}.json"
     )
     os.makedirs(args.results_dir, exist_ok=True)
     with open(results_path, "w") as f:
