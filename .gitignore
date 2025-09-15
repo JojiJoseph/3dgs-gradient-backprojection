@@ -7,3 +7,7 @@ checkpoints
 temp_*
 
 symlink_*.py
+archive
+*ckpt
+*.pt
+*.pth
