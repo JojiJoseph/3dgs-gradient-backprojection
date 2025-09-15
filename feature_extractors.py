@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import torch
 from lseg import LSegNet
+import clip
 
 # registry
 BACKPROJECTION_FEATURE_EXTRACTORS = {}
@@ -274,3 +275,75 @@ class Ovs3DOneHotFeatureExtractor(FeatureExtractor):
         feats = self._create_feature_map(features_path)
         return feats
         
+
+@register_feature_extractor("clip-text-3dovs")
+class OvsClipTextFeatureExtractor(FeatureExtractor):
+    def __init__(self, device, data_dir):
+        super().__init__()
+        self.device = device
+        self.feature_dir = os.path.join(data_dir, "segmentations")
+        classes_path = os.path.join(self.feature_dir, "classes.txt")
+        with open(classes_path, 'r') as f:
+            classes = f.readlines()
+        self.classes = sorted([c.strip() for c in classes])
+
+        net = LSegNet(
+            backbone="clip_vitl16_384",
+            features=256,
+            crop_size=480,
+            arch_option=0,
+            block_depth=0,
+            activation="lrelu",
+        )
+        # Load pre-trained weights
+        net.load_state_dict(
+            torch.load("./checkpoints/lseg_minimal_e200.ckpt", map_location=device)
+        )
+        net.eval()
+        net.to(device)
+
+        self.device = device
+        self.net = net
+        self.dim = 512
+        
+        clip_text_encoder = net.clip_pretrained.encode_text
+
+        del net
+
+        prompts = self.classes
+
+        embeddings = clip_text_encoder(clip.tokenize(prompts).to(device)).float()
+
+        self.text_embeddings = embeddings
+
+        # seg_directories
+        seg_directories = [d for d in os.listdir(self.feature_dir) if os.path.isdir(os.path.join(self.feature_dir, d))]
+        seg_directories = sorted(seg_directories)
+        self.train_dirs = seg_directories[:-1] # Not exactly train dirs though
+        self.test_dir = seg_directories[-1]
+
+
+    def _create_feature_map(self, features_path):
+
+        # eye = torch.eye(self.dim)
+        feature_map = None
+        for index, class_ in enumerate(self.classes):
+            mask_path = os.path.join(features_path, f"{class_}.png")
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                
+            mask_height, mask_width = mask.shape
+            mask = cv2.resize(mask, (mask_width // 4, mask_height // 4)) # TODO: Change hardcoding
+            if feature_map is None:
+                feature_map = torch.zeros((mask.shape[0], mask.shape[1], self.dim), dtype=torch.float32)
+            feature_map[mask > 128] = self.text_embeddings[index]  # Assuming mask is binary with values 0 and 255
+        return feature_map
+
+    def extract_features(self, frame, metadata):
+        file_name = metadata["image_name"].split("/")[-1]
+        stem = os.path.splitext(file_name)[0]
+        features_path = os.path.join(self.feature_dir, f"{stem}")
+        if not os.path.exists(features_path):
+            return None
+        
+        feats = self._create_feature_map(features_path)
+        return feats
