@@ -241,7 +241,7 @@ def get_viewmat_from_blender_frame(frame):
     return viewmat
 
 
-def prune_by_gradients(splats):
+def prune_by_gradients(splats, return_mask=False):
     colmap_project = splats["colmap_project"]
     frame_idx = 0
     means = splats["means"]
@@ -296,6 +296,9 @@ def prune_by_gradients(splats):
     splats["opacity"] = splats["opacity"][mask]
     if "features" in splats:
         splats["features"] = splats["features"][mask]
+
+    if return_mask:
+        return splats, mask
     
     return splats
 
@@ -592,7 +595,7 @@ def get_frames_scannet(scannet_dir, interval=None, n_views=None, percentage_fram
         if np.isnan(pose).any():
             continue
         viewmat = torch.linalg.inv(torch.tensor(pose).float())
-        print(image)
+        # print(image)
         frame = {
             "image_name": image,
             "viewmat": viewmat,
