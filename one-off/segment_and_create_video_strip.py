@@ -101,6 +101,8 @@ def render_to_gif(
     feedback: bool = False,
     use_checkerboard_background: bool = False,
     no_sh: bool = False,
+    save_rgba: bool = False,
+    white_background: bool = False,
 ):
     if feedback:
         cv2.destroyAllWindows()
@@ -131,20 +133,29 @@ def render_to_gif(
             width=K[0, 2] * 2,
             height=K[1, 2] * 2,
             sh_degree=3 if not no_sh else None,
+            backgrounds=torch.ones((3,)) if white_background else torch.zeros((3,))
         )
         frame = np.clip(output[0].detach().cpu().numpy() * 255, 0, 255).astype(np.uint8)
+        alphas = alphas[0].detach().cpu().numpy()
         if use_checkerboard_background:
             checkerboard = create_checkerboard(frame.shape[1], frame.shape[0])
-            alphas = alphas[0].detach().cpu().numpy()
             frame = frame * alphas + checkerboard * (1 - alphas)
             frame = np.clip(frame, 0, 255).astype(np.uint8)
         frames.append(frame)
         if feedback:
             cv2.imshow("Rendering", frame[..., ::-1])
-            cv2.imwrite(f"{aux_dir}/{image.name}", frame[..., ::-1])
+            if save_rgba:
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGRA)
+                alpha_channel = (alphas * 255).astype(np.uint8)
+                frame[:, :, 3] = alpha_channel[..., 0]
+                image_name = image.name.split(".")[0] + ".png"
+                cv2.imwrite(f"{aux_dir}/{image_name}", frame)
+                # cv2.imwrite(f"{aux_dir}/{image.name}", frame)
+            else:
+                cv2.imwrite(f"{aux_dir}/{image.name}", frame[..., ::-1])
             cv2.waitKey(1)
     if output_path is not None:
-        imageio.mimsave(output_path, frames, fps=10, loop=0)
+        imageio.mimsave(output_path, frames, fps=20, loop=0)
     if feedback:
         cv2.destroyAllWindows()
 
@@ -321,22 +332,25 @@ def main(
     mask3d, mask3d_inv = get_mask3d_lseg(splats, features, prompt, neg_prompt)
     extracted, deleted, masked = apply_mask3d(splats, mask3d, mask3d_inv)
 
-    render_mask_2d_to_gif(
-        splats,
-        features,
-        prompt,
-        neg_prompt,
-        f"{results_dir}/mask2d.gif",
-        show_visual_feedback,
-    )
-
     if False:
+        render_mask_2d_to_gif(
+            splats,
+            features,
+            prompt,
+            neg_prompt,
+            f"{results_dir}/mask2d.gif",
+            show_visual_feedback,
+        )
+
+    if True:
 
         render_to_gif(
             f"{results_dir}/extracted.gif",
             extracted,
             show_visual_feedback,
-            use_checkerboard_background=True,
+            # use_checkerboard_background=True,
+            save_rgba=True,
+            white_background=True,
         )
         render_to_gif(f"{results_dir}/deleted.gif", deleted, show_visual_feedback)
 
