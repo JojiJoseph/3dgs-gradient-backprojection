@@ -62,7 +62,7 @@ class LSegFeatureExtractor(FeatureExtractor):
         self.normalize_transform = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 
     def extract_features(self, frame, metadata=None, normalize_input=True):
-        
+        # print(frame.shape)
         with torch.no_grad():
             # Implement feature extraction logic for LSeg
             height, width = frame.shape[:2]
@@ -171,8 +171,9 @@ class LangSplatFeatureExtractor(FeatureExtractor):
         self.device = device
         self.feature_dir = feature_dir
         self.level = level
+        self.dim = 512
         npys = [f for f in os.listdir(feature_dir) if f.endswith("_f.npy")]
-        # Load one to find the dimension
+        # # Load one to find the dimension
         if npys:
             sample_feats = np.load(os.path.join(feature_dir, npys[0]))
             self.dim = sample_feats.shape[-1]
@@ -207,6 +208,7 @@ class ScanNetInstanceFeatureExtractor(FeatureExtractor):
         super().__init__()
         self.device = device
         self.feature_dir = feature_dir
+        self.data_dir = data_dir
         self.level = level
         # Find the name of data_dir
         scene_name = os.path.basename(os.path.normpath(data_dir))
@@ -234,6 +236,96 @@ class ScanNetInstanceFeatureExtractor(FeatureExtractor):
         feature_map_one_hot = np.zeros((feature_map.shape[0], feature_map.shape[1], self.max_classes), dtype=np.float32)
         eye = np.eye(self.max_classes)
         feature_map_one_hot = eye[feature_map]
+
+        return torch.from_numpy(feature_map_one_hot).float().to(self.device)
+    
+@register_feature_extractor("scannet-lseg")
+class ScanNetLSegFeatureExtractor(FeatureExtractor):
+    def __init__(self, device, data_dir, feature_dir, level=0,max_classes=100):
+        super().__init__()
+        self.device = device
+        self.data_dir = data_dir
+        self.feature_dir = feature_dir
+        self.level = level
+        # Find the name of data_dir
+        scene_name = os.path.basename(os.path.normpath(data_dir))
+        self.scene_name = scene_name
+        self.max_classes = max_classes
+        self.dim = max_classes  # One-hot encoding dimension
+                # super().__init__()
+        # Initialize the LSeg model here
+
+        net = LSegNet(
+            backbone="clip_vitl16_384",
+            features=256,
+            crop_size=480,
+            arch_option=0,
+            block_depth=0,
+            activation="lrelu",
+        )
+        # Load pre-trained weights
+        net.load_state_dict(
+            torch.load("./checkpoints/lseg_minimal_e200.ckpt", map_location=device)
+        )
+        net.eval()
+        net.to(device)
+
+        self.device = device
+        self.net = net
+        self.dim = 512
+        # self.normalize_transform = Normalize(mean=[0.48145466, 0.4578275, 0.40821073], std=[0.26862954, 0.26130258, 0.27577711])
+        self.normalize_transform = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+
+        self.normalize_transform = Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+
+    def set_level(self, level):
+        self.level = level
+
+    def _create_feature_map(self, features, segments, level):
+        seg_map = segments[level]  # (H, W)
+        mask = seg_map != -1
+        feature_map = np.zeros(
+            (seg_map.shape[0], seg_map.shape[1], features.shape[1]), dtype=np.float32
+        )
+        feature_map[mask] = features[seg_map[mask]]
+        return feature_map
+
+    def extract_features(self, frame, metadata, normalize_input=True):
+        file_name = metadata["image_name"].split("/")[-1]
+        stem = os.path.splitext(file_name)[0]
+        image_path = os.path.join(self.data_dir, "output", "color", f"{stem}.jpg")
+        # print(294, image_path)
+        # features_path = os.path.join(self.feature_dir, f"{stem}.png")
+        # feature_map = cv2.imread(features_path, cv2.IMREAD_UNCHANGED)
+        # feature_map_one_hot = np.zeros((feature_map.shape[0], feature_map.shape[1], self.max_classes), dtype=np.float32)
+        # eye = np.eye(self.max_classes)
+        # feature_map_one_hot = eye[feature_map]
+
+        frame = cv2.imread(image_path)
+        frame = cv2.medianBlur(frame, 5)
+        frame = frame[..., ::-1]  # BGR to RGB
+        frame = frame / 255.0
+        frame = torch.from_numpy(frame).float()
+
+        with torch.no_grad():
+            # Implement feature extraction logic for LSeg
+            height, width = frame.shape[:2]
+            frame = torch.nn.functional.interpolate(
+                frame[None].permute(0, 3, 1, 2).to(self.device),
+                size=(480, 480),
+                mode="bilinear",
+            )
+            frame.to(self.device)
+            if normalize_input:
+                frame = self.normalize_transform(frame)
+            
+            feats = self.net.forward(frame)
+            feats = torch.nn.functional.normalize(feats, dim=1)
+        feats = torch.nn.functional.interpolate(
+            feats, size=(height, width), mode="bilinear"
+        )[0]
+        feats = feats.permute(1, 2, 0)
+        return feats
 
         return torch.from_numpy(feature_map_one_hot).float().to(self.device)
     
