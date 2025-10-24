@@ -169,6 +169,7 @@ def load_checkpoint_f3dgs(
             "rotation": model_params["quats"],
             "opacity": model_params["opacities"],
             "conv": model_params["conv"],
+            "conv_bias": model_params.get("conv_bias",0),
             "features": model_params["features"],
         }
     else:
@@ -257,6 +258,68 @@ def prune_by_gradients(splats, return_mask=False):
     gaussian_grads = torch.zeros(colors.shape[0], device=colors.device)
     for image in sorted(colmap_project.images.values(), key=lambda x: x.name):
         viewmat = get_viewmat_from_colmap_image(image)
+        output, _, _ = rasterization(
+            means,
+            quats,
+            scales,
+            opacities,
+            colors[:, 0, :],
+            viewmats=viewmat[None],
+            Ks=K[None],
+            # sh_degree=3,
+            width=K[0, 2] * 2,
+            height=K[1, 2] * 2,
+        )
+        frame_idx += 1
+        pseudo_loss = ((output.detach() + 1 - output) ** 2).mean()
+        pseudo_loss.backward()
+        # print(colors.grad.shape)
+        gaussian_grads += (colors.grad[:, 0]).norm(dim=[1])
+        colors.grad.zero_()
+
+    mask = gaussian_grads > 0
+    # console = Console()
+    # table = Table(title="Pruning Report")
+    # table.add_column("Metric", style="cyan", no_wrap=True)
+    # table.add_column("Value", style="magenta")
+
+    # table.add_row("Total splats", str(len(gaussian_grads)))
+    # table.add_row("Pruned splats", str((~mask).sum().item()))
+    # table.add_row("Remaining splats", str(mask.sum().item()))
+
+    # console.print(table)
+    splats = splats.copy()
+    splats["means"] = splats["means"][mask]
+    splats["features_dc"] = splats["features_dc"][mask]
+    splats["features_rest"] = splats["features_rest"][mask]
+    splats["scaling"] = splats["scaling"][mask]
+    splats["rotation"] = splats["rotation"][mask]
+    splats["opacity"] = splats["opacity"][mask]
+    if "features" in splats:
+        splats["features"] = splats["features"][mask]
+
+    if return_mask:
+        return splats, mask
+    
+    return splats
+
+def prune_by_gradients_synthetic(splats, return_mask=False):
+    frame_idx = 0
+    means = splats["means"]
+    colors_dc = splats["features_dc"]
+    colors_rest = splats["features_rest"]
+    colors = torch.cat([colors_dc, colors_rest], dim=1)
+    opacities = torch.sigmoid(splats["opacity"])
+    scales = torch.exp(splats["scaling"])
+    quats = splats["rotation"]
+
+    K = splats["camera_matrix"]
+    colors.requires_grad = True
+    gaussian_grads = torch.zeros(colors.shape[0], device=colors.device)
+    for frame in (splats["transforms"]["frames"]):
+
+        viewmat = get_viewmat_from_blender_frame(frame)
+        # viewmat = get_viewmat_from_colmap_image(image)
         output, _, _ = rasterization(
             means,
             quats,
@@ -594,6 +657,8 @@ def get_frames_scannet(scannet_dir, interval=None, n_views=None, percentage_fram
         pose = np.loadtxt(os.path.join(pose_dir, f"{image[:-4]}.txt"))
         if np.isnan(pose).any():
             continue
+        if np.isinf(pose).any():
+            continue
         viewmat = torch.linalg.inv(torch.tensor(pose).float())
         # print(image)
         frame = {
@@ -754,6 +819,12 @@ def load_checkpoint_scannet(
             "rotation": model_params["quats"],
             "opacity": model_params["opacities"],
         }
+        if "features" in model_params:
+            splats["features"] = model_params["features"]
+        if "conv" in model_params:
+            splats["conv"] = model_params["conv"]
+        if "conv_bias" in model_params:
+            splats["conv_bias"] = model_params["conv_bias"]
     elif format == "ply":
         plydata = PlyData.read(checkpoint)
         vertex = plydata['vertex'].data
