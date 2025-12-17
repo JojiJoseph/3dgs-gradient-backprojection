@@ -1,6 +1,6 @@
 # Gradient-Weighted Feature Back-Projection: A Fast Alternative to Feature Distillation in 3D Gaussian Splatting
 
-This repository contains the code for the <span color="#007FFF">**SIGGRAPH Asia 2025**</span> paper **Gradient-Weighted Feature Back-Projection: A Fast Alternative to Feature Distillation in 3D Gaussian Splatting**.
+This repository contains the code for the **SIGGRAPH Asia 2025** paper **Gradient-Weighted Feature Back-Projection: A Fast Alternative to Feature Distillation in 3D Gaussian Splatting**.
 
 
 
