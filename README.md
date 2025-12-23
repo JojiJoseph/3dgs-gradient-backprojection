@@ -82,15 +82,24 @@ A big thanks to the following tools/libraries, which were instrumental in this p
 
 
 ## Citation
-If you find this paper or the code helpful for your work, please consider citing our work,
+If you find this paper or the code helpful for your work, please consider citing our paper,
 ```
-@misc{joseph2024gradientweightedfeaturebackprojectionfast,
-      title={Gradient-Weighted Feature Back-Projection: A Fast Alternative to Feature Distillation in 3D Gaussian Splatting}, 
-      author={Joji Joseph and Bharadwaj Amrutur and Shalabh Bhatnagar},
-      year={2024},
-      eprint={2411.15193},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2411.15193}, 
+@inproceedings{joseph2024gradientweightedfeaturebackprojection,
+author = {Joseph, Joji and Amrutur, Bharadwaj and Bhatnagar, Shalabh},
+title = {Gradient-Weighted Feature Back-Projection: A Fast Alternative to Feature Distillation in 3D Gaussian Splatting},
+year = {2025},
+isbn = {9798400721373},
+publisher = {Association for Computing Machinery},
+address = {New York, NY, USA},
+url = {https://doi.org/10.1145/3757377.3763926},
+doi = {10.1145/3757377.3763926},
+abstract = {We propose a training-free method for feature field rendering in 3D Gaussian Splatting, enabling fast and scalable embedding of high-dimensional features into 3D scenes. Unlike training-based feature distillation methods, which are computationally expensive and often yield feature embeddings that poorly reflect the rendered semantics, our approach back-projects 2D features onto pre-trained 3D Gaussians using influence weights derived from the rendering equation. This projection produces a queryable 3D feature field, validated on tasks including 2D and 3D segmentation, affordance transfer, and identity encoding, spanning queries using language, pixel, and synthetic embeddings. These capabilities, in turn, enable downstream applications in augmented and virtual reality, interactive scene editing, and robotics. Across different tasks, our method achieves performance comparable to or better than training-based approaches, while significantly reducing computational cost. The project page is at https://jojijoseph.github.io/3dgs-backprojection.},
+booktitle = {Proceedings of the SIGGRAPH Asia 2025 Conference Papers},
+articleno = {178},
+numpages = {12},
+keywords = {3DGS, Feature Field Distillation, Feature Lifting},
+location = {
+},
+series = {SA Conference Papers '25}
 }
 ```
